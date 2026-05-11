@@ -1,0 +1,18 @@
+# Local Postgres for OAuth token persistence (connector_accounts).
+# Start: docker compose up -d
+# JDBC: jdbc:postgresql://localhost:5432/emathp  (user/password: emathp / emathp)
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: emathp
+      POSTGRES_PASSWORD: emathp
+      POSTGRES_DB: emathp
+    ports:
+      - "5432:5432"
+    volumes:
+      - emathp-pgdata:/var/lib/postgresql/data
+
+volumes:
+  emathp-pgdata:
