@@ -1,6 +1,6 @@
 # EmaTHP — federated query layer
 
-This README summarizes how connectors, pushdown, snapshots, tests, and the demo web fit together. *(Git history was not available in the authoring environment; align the “Recent changes” section with your actual diff before opening a PR.)*
+This README summarizes how connectors, pushdown, snapshots, tests, and the demo web fit together.
 
 ## Connector model
 
@@ -70,34 +70,45 @@ Notion follows the same pattern: **mock** (`notion/mock`) and **demo** (`notion/
 
 ## Git hook: PR description on push
 
-One-time setup (from repo root):
+The repo ships **`.githooks/pre-push`** and **`scripts/generate-pr-description.sh`**, but **Git does not run them until you point `core.hooksPath` at this directory** (once per clone). Without that step, nothing runs on push — the files are just versioned like any other script.
+
+**One-time enable (required):** from the repo root run:
 
 ```bash
 sh scripts/setup-git-hooks.sh
 ```
 
-On Windows PowerShell: `.\scripts\setup-git-hooks.ps1`
+Windows (PowerShell): `.\scripts\setup-git-hooks.ps1`
 
-This sets **`core.hooksPath`** to **`.githooks`**. On each **`git push`**, **`pre-push`** runs **`scripts/generate-pr-description.sh`**, which writes **`PR_DESCRIPTION.generated.md`** (gitignored) with a title hint, commit list **`origin/main..HEAD`** (or **`master`** / **`develop`** if `main` is missing), and **`git diff --stat`**. Copy into your PR body and edit. Run the script anytime without pushing:
+**Check it worked:** `git config --get core.hooksPath` should print `.githooks`.
+
+Then each **`git push`** runs **`pre-push`**, which calls **`scripts/generate-pr-description.sh`** (Git bundles `sh` when it runs hooks — you usually do **not** need `sh` on PATH for **`git push`**). To generate the same file **manually**:
+
+**PowerShell (no `sh` required):** from repo root:
+
+```powershell
+.\scripts\generate-pr-description.ps1
+```
+
+**Git Bash / macOS / Linux:**
 
 ```bash
 sh scripts/generate-pr-description.sh
 ```
 
-Override output path: `PR_DESCRIPTION_OUT=my-pr.md sh scripts/generate-pr-description.sh`
+**PowerShell but you want the shell script:** call Git’s `sh` explicitly (adjust path if Git lives elsewhere):
+
+```powershell
+& "C:\Program Files\Git\bin\sh.exe" .\scripts\generate-pr-description.sh
+```
+
+PowerShell requires **`&`** before the path to **invoke** the program; otherwise the quoted string is only an expression, not a command.
+
+Override output: `$env:PR_DESCRIPTION_OUT="my-pr.md"; .\scripts\generate-pr-description.ps1` or `PR_DESCRIPTION_OUT=my-pr.md sh scripts/generate-pr-description.sh`
+
+**Commit checklist:** include **`.githooks/pre-push`**, **`scripts/generate-pr-description.sh`**, **`scripts/generate-pr-description.ps1`**, and **`scripts/setup-git-hooks.sh`** / **`.ps1`** so others can enable hooks and generate PR text on Windows without Bash.
 
 ## Demo web presets and trace log
 
 - **Presets** on the playground home page load canned SQL from **`DemoQueryPresets`** (single-source ORDER BY and a join on title), switch the UI to **Demo** connector mode, and leave **pagination to the UI page size** (not the SQL `LIMIT`, which only caps materialization).
 - **`logs/web-query-trace.log`** (gitignored) appends a human-readable line per successful **`/api/query`**: connector mode, SQL preview, **`queryHash`**, snapshot path, freshness, per-side **`pushedSummary`**, **`pending`**, **`residual`**, **`snapshotReuseNoProviderCall`**, fetch counts, and per-fetch call rows (mirrors the JSON).
-
----
-
-## Recent changes (for your next PR description)
-
-Use your local `git log` / diff against `main` to finalize. The following matches work done in this branch’s conversation (paraphrase for the PR body):
-
-- Added **demo** Google + Notion connectors (`connector/google/demo`, `connector/notion/demo`) with **`DemoConnectorDefaults`** (delay, provider page size, demo UI page size).
-- **Mock** APIs return the **full** static corpus for every user; isolation tests emphasize **snapshot path** separation.
-- **Demo web**: single hybrid server; **live** stack initializes **at startup** when OAuth + **`CONNECTOR_TOKEN_KEY`** + DB are available; otherwise **live** is disabled with a clear **503** / UI message; removed env-driven mock latency toggles and UI-per-request delay in favor of **`MockConnectorDefaults`** / **`DemoConnectorDefaults`**.
-- **`WebEnv`**: Google OAuth client id/secret optional when only mock/demo are needed.
