@@ -1,4 +1,4 @@
-package org.emathp.connector.google.mock;
+package org.emathp.connector.google.demo;
 
 import java.time.Instant;
 import java.util.Comparator;
@@ -9,92 +9,83 @@ import java.util.regex.Pattern;
 import org.emathp.connector.google.api.GoogleDriveFile;
 import org.emathp.connector.google.api.GoogleSearchRequest;
 import org.emathp.connector.google.api.GoogleSearchResponse;
+import org.emathp.config.DemoConnectorDefaults;
 
 /**
- * In-memory mock of Google Drive Files API semantics with simulated cursor pagination.
+ * In-memory Google Drive mock for <strong>demo</strong> mode: two principals ({@code alice},
+ * {@code bob}), four files each (eight total). Three {@code alice} files share one title with
+ * Notion demo pages; two {@code bob} files share another title for join experiments.
  *
- * @implNote Pagination tokens here are plain numeric start indices (e.g. {@code "2"}) for
- *           readability. Real Drive tokens are opaque base64 blobs; clients must treat them as
- *           opaque regardless. The mock's choice doesn't change the engine-side abstraction —
- *           the engine never inspects the token's contents.
- * @implNote LIMIT semantics: this mock honors only {@code pageSize} per call and has no
- *           total-result cap parameter. That mirrors the real Google Drive Files API. The
- *           connector contract intentionally has no LIMIT slot at all (see ADR-0003): LIMIT
- *           is always engine-enforced by {@link org.emathp.engine.QueryExecutor} across pages.
- * @implNote The query DSL is regex-based for simplicity. It accepts only the exact predicates
- *           {@link GoogleQueryTranslator} emits. Hand-written inputs that deviate from those shapes
- *           silently fall through and match every row.
+ * <p>Uses the same query DSL regex layer as {@link org.emathp.connector.google.mock.MockGoogleDriveApi}.
  */
-public final class MockGoogleDriveApi {
+public final class DemoGoogleDriveApi {
 
-    private static final List<GoogleDriveFile> SAMPLE_FILES = List.of(
+    /** Three shared titles for alice + notion; two for bob + notion. */
+    private static final List<GoogleDriveFile> DEMO_FILES = List.of(
             new GoogleDriveFile(
-                    "file-01",
-                    "OAuth Migration Plan",
+                    "demo-g-a1",
+                    "JoinKeyAlpha",
                     "alice",
-                    List.of("alice", "bob"),
-                    Instant.parse("2026-03-01T08:00:00Z"),
-                    Instant.parse("2026-04-10T09:30:00Z"),
-                    "https://drive.google.com/file/d/file-01/view"),
+                    List.of("alice"),
+                    Instant.parse("2026-03-01T10:00:00Z"),
+                    Instant.parse("2026-06-10T12:00:00Z"),
+                    "https://drive.google.com/file/d/demo-g-a1/view"),
             new GoogleDriveFile(
-                    "file-02",
-                    "Quarterly Hiring Plan",
-                    "carol",
-                    List.of("carol", "dave", "alice"),
-                    Instant.parse("2026-05-15T10:00:00Z"),
-                    Instant.parse("2026-06-02T14:15:00Z"),
-                    "https://drive.google.com/file/d/file-02/view"),
+                    "demo-g-a2",
+                    "JoinKeyAlpha",
+                    "alice",
+                    List.of("alice"),
+                    Instant.parse("2026-03-02T10:00:00Z"),
+                    Instant.parse("2026-06-09T12:00:00Z"),
+                    "https://drive.google.com/file/d/demo-g-a2/view"),
             new GoogleDriveFile(
-                    "file-03",
-                    "OAuth Rollout Checklist",
+                    "demo-g-a3",
+                    "JoinKeyAlpha",
+                    "alice",
+                    List.of("alice"),
+                    Instant.parse("2026-03-03T10:00:00Z"),
+                    Instant.parse("2026-06-08T12:00:00Z"),
+                    "https://drive.google.com/file/d/demo-g-a3/view"),
+            new GoogleDriveFile(
+                    "demo-g-a4",
+                    "AliceDriveExtra",
+                    "alice",
+                    List.of("alice"),
+                    Instant.parse("2026-03-04T10:00:00Z"),
+                    Instant.parse("2026-06-07T12:00:00Z"),
+                    "https://drive.google.com/file/d/demo-g-a4/view"),
+            new GoogleDriveFile(
+                    "demo-g-b1",
+                    "JoinKeyBeta",
                     "bob",
                     List.of("bob"),
-                    Instant.parse("2026-04-25T13:30:00Z"),
-                    Instant.parse("2026-05-20T11:00:00Z"),
-                    "https://drive.google.com/file/d/file-03/view"),
+                    Instant.parse("2026-04-01T10:00:00Z"),
+                    Instant.parse("2026-05-10T12:00:00Z"),
+                    "https://drive.google.com/file/d/demo-g-b1/view"),
             new GoogleDriveFile(
-                    "file-04",
-                    "Roadmap Q3",
-                    "dave",
-                    List.of("dave", "carol"),
-                    Instant.parse("2026-05-01T09:00:00Z"),
-                    Instant.parse("2026-05-30T16:45:00Z"),
-                    "https://drive.google.com/file/d/file-04/view"),
-            new GoogleDriveFile(
-                    "file-05",
-                    "API Contract Draft",
-                    "eve",
-                    List.of("eve", "alice"),
-                    Instant.parse("2026-04-20T11:20:00Z"),
-                    Instant.parse("2026-05-05T08:10:00Z"),
-                    "https://drive.google.com/file/d/file-05/view"),
-            new GoogleDriveFile(
-                    "file-06",
-                    "Engineering Onboarding",
-                    "frank",
-                    List.of("frank"),
-                    Instant.parse("2026-03-15T07:45:00Z"),
-                    Instant.parse("2026-04-25T12:00:00Z"),
-                    "https://drive.google.com/file/d/file-06/view"),
-            // NOTE: file-07 / file-08 exist to give the JOIN demo something to match against
-            // (see Notion's page-07 / page-08 with identical titles). Their updatedAt values
-            // are deliberately old enough to avoid disturbing Demos 1-3's top-N results.
-            new GoogleDriveFile(
-                    "file-07",
-                    "Q4 Roadmap",
-                    "carol",
-                    List.of("carol", "alice"),
-                    Instant.parse("2026-01-01T08:00:00Z"),
-                    Instant.parse("2026-01-15T10:00:00Z"),
-                    "https://drive.google.com/file/d/file-07/view"),
-            new GoogleDriveFile(
-                    "file-08",
-                    "Security Review",
+                    "demo-g-b2",
+                    "JoinKeyBeta",
                     "bob",
                     List.of("bob"),
-                    Instant.parse("2026-02-01T09:00:00Z"),
-                    Instant.parse("2026-02-10T11:00:00Z"),
-                    "https://drive.google.com/file/d/file-08/view"));
+                    Instant.parse("2026-04-02T10:00:00Z"),
+                    Instant.parse("2026-05-09T12:00:00Z"),
+                    "https://drive.google.com/file/d/demo-g-b2/view"),
+            new GoogleDriveFile(
+                    "demo-g-b3",
+                    "BobDriveExtra1",
+                    "bob",
+                    List.of("bob"),
+                    Instant.parse("2026-04-03T10:00:00Z"),
+                    Instant.parse("2026-05-08T12:00:00Z"),
+                    "https://drive.google.com/file/d/demo-g-b3/view"),
+            new GoogleDriveFile(
+                    "demo-g-b4",
+                    "BobDriveExtra2",
+                    "bob",
+                    List.of("bob"),
+                    Instant.parse("2026-04-04T10:00:00Z"),
+                    Instant.parse("2026-05-07T12:00:00Z"),
+                    "https://drive.google.com/file/d/demo-g-b4/view"));
 
     private static final Pattern NAME_EQ =
             Pattern.compile("^\\s*name\\s*=\\s*'((?:[^'\\\\]|\\\\.)*)'\\s*$", Pattern.CASE_INSENSITIVE);
@@ -107,14 +98,14 @@ public final class MockGoogleDriveApi {
     private static final Pattern UPDATED_LT =
             Pattern.compile("^\\s*updatedAt\\s*<\\s*'([^']+)'\\s*$", Pattern.CASE_INSENSITIVE);
 
-    public MockGoogleDriveApi() {}
-
     public GoogleSearchResponse search(GoogleSearchRequest request, String actingUserId) {
+        sleepDemoDelay();
         List<GoogleDriveFile> corpus = corpusForUser(actingUserId);
-        List<GoogleDriveFile> filtered = corpus.stream()
-                .filter(f -> matchesQuery(f, request.q()))
-                .sorted(orderComparator(request.orderBy()))
-                .toList();
+        List<GoogleDriveFile> filtered =
+                corpus.stream()
+                        .filter(f -> matchesQuery(f, request.q()))
+                        .sorted(orderComparator(request.orderBy()))
+                        .toList();
 
         int total = filtered.size();
         int start = parseToken(request.pageToken());
@@ -129,12 +120,30 @@ public final class MockGoogleDriveApi {
         return new GoogleSearchResponse(page, nextPageToken);
     }
 
-    /**
-     * Full static fixture for every principal (including named users) so mock mode exercises the
-     * same eight-row corpus as anonymous pagination tests; per-user isolation is snapshot path only.
-     */
+    private static void sleepDemoDelay() {
+        int ms = DemoConnectorDefaults.SEARCH_DELAY_MILLIS;
+        if (ms <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private List<GoogleDriveFile> corpusForUser(String actingUserId) {
-        return SAMPLE_FILES;
+        if (actingUserId == null || actingUserId.isBlank()) {
+            return DEMO_FILES;
+        }
+        String u = actingUserId.trim().toLowerCase(Locale.ROOT);
+        if ("alice".equals(u)) {
+            return DEMO_FILES.subList(0, 4);
+        }
+        if ("bob".equals(u)) {
+            return DEMO_FILES.subList(4, DEMO_FILES.size());
+        }
+        return List.of();
     }
 
     private static int parseToken(String token) {

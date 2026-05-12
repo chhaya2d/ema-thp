@@ -7,6 +7,7 @@ import java.util.Set;
 import org.emathp.auth.UserContext;
 import org.emathp.connector.CapabilitySet;
 import org.emathp.connector.Connector;
+import org.emathp.connector.mock.MockConnectorDevSettings;
 import org.emathp.connector.notion.api.NotionPage;
 import org.emathp.connector.notion.api.NotionSearchResponse;
 import org.emathp.model.ConnectorQuery;
@@ -39,13 +40,23 @@ public final class NotionConnector implements Connector {
 
     private final MockNotionApi api;
     private final NotionQueryTranslator translator = new NotionQueryTranslator();
+    private final MockConnectorDevSettings dev;
 
     public NotionConnector() {
-        this(new MockNotionApi());
+        this(new MockNotionApi(), MockConnectorDevSettings.none());
+    }
+
+    public NotionConnector(MockConnectorDevSettings dev) {
+        this(new MockNotionApi(), dev);
     }
 
     public NotionConnector(MockNotionApi api) {
+        this(api, MockConnectorDevSettings.none());
+    }
+
+    public NotionConnector(MockNotionApi api, MockConnectorDevSettings dev) {
         this.api = api;
+        this.dev = dev;
     }
 
     @Override
@@ -65,8 +76,9 @@ public final class NotionConnector implements Connector {
 
     @Override
     public SearchResult<EngineRow> search(UserContext userContext, ConnectorQuery query) {
+        dev.sleepBeforeMockSearch();
         var nativeRequest = translator.translate(query);
-        NotionSearchResponse response = api.search(nativeRequest);
+        NotionSearchResponse response = api.search(nativeRequest, userContext.userId());
         List<EngineRow> rows = response.pages().stream().map(this::toEngineRow).toList();
         return new SearchResult<>(rows, response.nextCursor());
     }

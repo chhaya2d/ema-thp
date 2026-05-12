@@ -18,20 +18,13 @@ public record WebEnv(
         String googleClientSecret,
         String oauthRedirectUri,
         String demoUserId,
-        boolean useMockConnectors,
         boolean useDevH2) {
 
     /**
-     * Loads settings from the environment. When {@code EMA_WEB_USE_MOCK_CONNECTORS=true}, the same
-     * in-memory Google + Notion connectors as {@link org.emathp.Main} are used — no Postgres, no
- * OAuth, no {@code CONNECTOR_TOKEN_KEY}. For real Drive + Postgres, omit that flag (or set
- * false) and supply OAuth + DB vars. Filesystem snapshot writes are off by default ({@code
- * EMA_PUSHDOWN_SNAPSHOT_RUN=false}); the mock embedded server forces snapshot materialization via
- * {@code new Planner(true)} so the demo stays cache-backed without env.
+     * Loads settings for {@link DemoWebServer}. Google OAuth client fields may be blank when only
+     * mock/demo modes are used; the server still builds JDBC defaults for optional live-stack init.
      */
     public static WebEnv load() {
-        boolean mock =
-                "true".equalsIgnoreCase(env("EMA_WEB_USE_MOCK_CONNECTORS", WebDefaults.EMA_WEB_USE_MOCK_CONNECTORS));
         boolean devH2 = "true".equalsIgnoreCase(env("EMA_DEV_H2", WebDefaults.EMA_DEV_H2));
         int port = parsePort(env("WEB_PORT", WebDefaults.WEB_PORT));
         String jdbc = env("EMA_JDBC_URL", null);
@@ -46,8 +39,8 @@ public record WebEnv(
         String userPg = devH2 ? WebDefaults.DEV_H2_USER : env("POSTGRES_USER", WebDefaults.POSTGRES_USER);
         String passPg =
                 devH2 ? WebDefaults.DEV_H2_PASSWORD : env("POSTGRES_PASSWORD", WebDefaults.POSTGRES_PASSWORD);
-        String cid = mock ? "" : req("GOOGLE_OAUTH_CLIENT_ID");
-        String sec = mock ? "" : req("GOOGLE_OAUTH_CLIENT_SECRET");
+        String cid = blankToEmpty(env("GOOGLE_OAUTH_CLIENT_ID", ""));
+        String sec = blankToEmpty(env("GOOGLE_OAUTH_CLIENT_SECRET", ""));
         String redirect = env("GOOGLE_OAUTH_REDIRECT_URI", null);
         if (redirect == null || redirect.isBlank()) {
             // NOTE: must match an Authorized redirect URI in Google Cloud exactly (localhost vs
@@ -55,15 +48,15 @@ public record WebEnv(
             redirect = WebDefaults.googleOAuthRedirectUri(port);
         }
         String demoUser = env("DEMO_USER_ID", WebDefaults.DEMO_USER_ID);
-        return new WebEnv(port, jdbc, userPg, passPg, cid, sec, redirect, demoUser, mock, devH2);
+        return new WebEnv(port, jdbc, userPg, passPg, cid, sec, redirect, demoUser, devH2);
     }
 
     private static String env(String key, String defaultVal) {
         return RuntimeEnv.get(key, defaultVal);
     }
 
-    private static String req(String key) {
-        return RuntimeEnv.require(key);
+    private static String blankToEmpty(String s) {
+        return s == null || s.isBlank() ? "" : s.trim();
     }
 
     private static int parsePort(String raw) {

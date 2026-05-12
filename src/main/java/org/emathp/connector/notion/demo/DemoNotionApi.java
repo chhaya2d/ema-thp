@@ -1,73 +1,62 @@
-package org.emathp.connector.notion.mock;
+package org.emathp.connector.notion.demo;
 
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.emathp.config.DemoConnectorDefaults;
 import org.emathp.connector.notion.api.NotionPage;
 import org.emathp.connector.notion.api.NotionSearchRequest;
 import org.emathp.connector.notion.api.NotionSearchResponse;
 
 /**
- * In-memory mock of Notion's pages search with simulated cursor pagination.
- *
- * @implNote Cursors are plain numeric start indices (e.g. {@code "2"}) for readability. Real
- *           Notion cursors are opaque UUIDs; clients must treat them as opaque regardless.
- * @implNote LIMIT semantics: this mock honors only {@code page_size} per call and has no
- *           total-result cap parameter. That mirrors the real Notion search API. The connector
- *           contract intentionally has no LIMIT slot at all (see ADR-0003): LIMIT is always
- *           engine-enforced by {@link org.emathp.engine.QueryExecutor} across pages.
- * @implNote The filter DSL is regex-based for simplicity. It accepts only the exact predicates
- *           {@link NotionQueryTranslator} emits. Hand-written inputs that deviate from those shapes
- *           silently fall through and match every page.
+ * Demo Notion pages aligned with {@link org.emathp.connector.google.demo.DemoGoogleDriveApi} titles
+ * for join UI experiments (same delay source as Google demo).
  */
-public final class MockNotionApi {
+public final class DemoNotionApi {
 
-    private static final List<NotionPage> SAMPLE_PAGES = List.of(
+    private static final List<NotionPage> DEMO_PAGES = List.of(
             new NotionPage(
-                    "page-01",
-                    "OAuth Architecture Notes",
-                    Instant.parse("2026-04-15T10:00:00Z"),
-                    "https://www.notion.so/page-01"),
+                    "demo-n-a1",
+                    "JoinKeyAlpha",
+                    Instant.parse("2026-06-10T14:00:00Z"),
+                    "https://www.notion.so/demo-n-a1"),
             new NotionPage(
-                    "page-02",
-                    "Hiring Rubric",
-                    Instant.parse("2026-05-25T16:30:00Z"),
-                    "https://www.notion.so/page-02"),
+                    "demo-n-a2",
+                    "JoinKeyAlpha",
+                    Instant.parse("2026-06-09T14:00:00Z"),
+                    "https://www.notion.so/demo-n-a2"),
             new NotionPage(
-                    "page-03",
-                    "OAuth Production Checklist",
-                    Instant.parse("2026-05-10T09:45:00Z"),
-                    "https://www.notion.so/page-03"),
+                    "demo-n-a3",
+                    "JoinKeyAlpha",
+                    Instant.parse("2026-06-08T14:00:00Z"),
+                    "https://www.notion.so/demo-n-a3"),
             new NotionPage(
-                    "page-04",
-                    "Onboarding Wiki",
-                    Instant.parse("2026-04-22T08:30:00Z"),
-                    "https://www.notion.so/page-04"),
+                    "demo-n-a4",
+                    "AliceNotionExtra",
+                    Instant.parse("2026-06-07T14:00:00Z"),
+                    "https://www.notion.so/demo-n-a4"),
             new NotionPage(
-                    "page-05",
-                    "Sprint Retro Notes",
-                    Instant.parse("2026-05-12T17:15:00Z"),
-                    "https://www.notion.so/page-05"),
+                    "demo-n-b1",
+                    "JoinKeyBeta",
+                    Instant.parse("2026-05-10T14:00:00Z"),
+                    "https://www.notion.so/demo-n-b1"),
             new NotionPage(
-                    "page-06",
-                    "Design Review Notes",
-                    Instant.parse("2026-03-20T14:00:00Z"),
-                    "https://www.notion.so/page-06"),
-            // NOTE: page-07 / page-08 mirror Google's file-07 / file-08 by title for the JOIN
-            // demo. lastEditedTime values are old enough to avoid disturbing Demos 1-3's top-N
-            // ordering.
+                    "demo-n-b2",
+                    "JoinKeyBeta",
+                    Instant.parse("2026-05-09T14:00:00Z"),
+                    "https://www.notion.so/demo-n-b2"),
             new NotionPage(
-                    "page-07",
-                    "Q4 Roadmap",
-                    Instant.parse("2026-01-20T10:00:00Z"),
-                    "https://www.notion.so/page-07"),
+                    "demo-n-b3",
+                    "BobNotionExtra1",
+                    Instant.parse("2026-05-08T14:00:00Z"),
+                    "https://www.notion.so/demo-n-b3"),
             new NotionPage(
-                    "page-08",
-                    "Security Review",
-                    Instant.parse("2026-02-15T14:00:00Z"),
-                    "https://www.notion.so/page-08"));
+                    "demo-n-b4",
+                    "BobNotionExtra2",
+                    Instant.parse("2026-05-07T14:00:00Z"),
+                    "https://www.notion.so/demo-n-b4"));
 
     private static final Pattern TITLE_EQ =
             Pattern.compile("^\\s*title\\s*=\\s*'((?:[^'\\\\]|\\\\.)*)'\\s*$", Pattern.CASE_INSENSITIVE);
@@ -80,13 +69,10 @@ public final class MockNotionApi {
     private static final Pattern EDITED_LT =
             Pattern.compile("^\\s*lastEditedTime\\s*<\\s*'([^']+)'\\s*$", Pattern.CASE_INSENSITIVE);
 
-    public MockNotionApi() {}
-
     public NotionSearchResponse search(NotionSearchRequest request, String actingUserId) {
+        sleepDemoDelay();
         List<NotionPage> corpus = corpusForUser(actingUserId);
-        List<NotionPage> filtered = corpus.stream()
-                .filter(p -> matches(p, request.filter()))
-                .toList();
+        List<NotionPage> filtered = corpus.stream().filter(p -> matches(p, request.filter())).toList();
 
         int total = filtered.size();
         int start = parseCursor(request.startCursor());
@@ -102,12 +88,30 @@ public final class MockNotionApi {
         return new NotionSearchResponse(page, nextCursor, hasMore);
     }
 
-    /**
-     * Full eight-page fixture for every principal; per-user differences are snapshot paths only
-     * (see demo connectors for alice/bob slice behaviour).
-     */
+    private static void sleepDemoDelay() {
+        int ms = DemoConnectorDefaults.SEARCH_DELAY_MILLIS;
+        if (ms <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private List<NotionPage> corpusForUser(String actingUserId) {
-        return SAMPLE_PAGES;
+        if (actingUserId == null || actingUserId.isBlank()) {
+            return DEMO_PAGES;
+        }
+        String u = actingUserId.trim().toLowerCase(Locale.ROOT);
+        if ("alice".equals(u)) {
+            return DEMO_PAGES.subList(0, 4);
+        }
+        if ("bob".equals(u)) {
+            return DEMO_PAGES.subList(4, DEMO_PAGES.size());
+        }
+        return List.of();
     }
 
     private static int parseCursor(String cursor) {

@@ -1,4 +1,4 @@
-package org.emathp.connector.google.mock;
+package org.emathp.connector.google.demo;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -7,53 +7,31 @@ import java.util.Set;
 import org.emathp.auth.UserContext;
 import org.emathp.connector.CapabilitySet;
 import org.emathp.connector.Connector;
-import org.emathp.connector.mock.MockConnectorDevSettings;
+import org.emathp.config.DemoConnectorDefaults;
 import org.emathp.connector.google.api.GoogleDriveFile;
 import org.emathp.connector.google.api.GoogleSearchResponse;
+import org.emathp.connector.google.mock.GoogleQueryTranslator;
 import org.emathp.model.ConnectorQuery;
 import org.emathp.model.EngineRow;
 import org.emathp.model.Operator;
 import org.emathp.model.SearchResult;
 
 /**
- * Mock Google Drive {@link Connector}: in-memory {@link MockGoogleDriveApi} + {@link
- * GoogleQueryTranslator}. For OAuth-backed production Drive access use {@link
- * org.emathp.connector.google.real.RealGoogleDriveConnector}.
+ * Demo Google Drive {@link Connector}: join-oriented fixture + fixed delay from {@link
+ * DemoConnectorDefaults}. Unit tests use {@link org.emathp.connector.google.mock.GoogleDriveConnector}.
  */
-public final class GoogleDriveConnector implements Connector {
+public final class DemoGoogleDriveConnector implements Connector {
 
-    // NOTE: no supportsLimit field — connector contract is cursor-only (ADR-0003). LIMIT is
-    // always engine-enforced regardless of provider capability, so there is no decision to
-    // advertise. supportsPagination=true reflects that Drive's Files API natively paginates
-    // (pageToken + pageSize); the engine maps that to its normalized cursor protocol.
     private static final CapabilitySet CAPABILITIES = new CapabilitySet(
-            /* supportsFiltering  */ true,
-            /* supportsProjection */ true,
-            /* supportsSorting    */ true,
-            /* supportsPagination */ true,
+            true,
+            true,
+            true,
+            true,
             Set.of("title", "updatedAt"),
             Set.of(Operator.EQ, Operator.GT, Operator.LIKE));
 
-    private final MockGoogleDriveApi api;
+    private final DemoGoogleDriveApi api = new DemoGoogleDriveApi();
     private final GoogleQueryTranslator translator = new GoogleQueryTranslator();
-    private final MockConnectorDevSettings dev;
-
-    public GoogleDriveConnector() {
-        this(new MockGoogleDriveApi(), MockConnectorDevSettings.none());
-    }
-
-    public GoogleDriveConnector(MockConnectorDevSettings dev) {
-        this(new MockGoogleDriveApi(), dev);
-    }
-
-    public GoogleDriveConnector(MockGoogleDriveApi api) {
-        this(api, MockConnectorDevSettings.none());
-    }
-
-    public GoogleDriveConnector(MockGoogleDriveApi api, MockConnectorDevSettings dev) {
-        this.api = api;
-        this.dev = dev;
-    }
 
     @Override
     public String source() {
@@ -62,7 +40,7 @@ public final class GoogleDriveConnector implements Connector {
 
     @Override
     public int defaultFetchPageSize() {
-        return 6;
+        return DemoConnectorDefaults.PROVIDER_PAGE_SIZE;
     }
 
     @Override
@@ -72,14 +50,12 @@ public final class GoogleDriveConnector implements Connector {
 
     @Override
     public SearchResult<EngineRow> search(UserContext userContext, ConnectorQuery query) {
-        dev.sleepBeforeMockSearch();
         var nativeRequest = translator.translate(query);
         GoogleSearchResponse response = api.search(nativeRequest, userContext.userId());
         List<EngineRow> rows = response.files().stream().map(this::toEngineRow).toList();
         return new SearchResult<>(rows, response.nextPageToken());
     }
 
-    /** Flat API-shaped row; federation adds join aliases when merging sides. */
     private EngineRow toEngineRow(GoogleDriveFile file) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", file.id());

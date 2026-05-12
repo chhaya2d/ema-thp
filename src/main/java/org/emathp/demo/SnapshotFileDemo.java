@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.emathp.auth.UserContext;
+import org.emathp.config.RuntimeEnv;
 import org.emathp.config.WebDefaults;
 import org.emathp.connector.Connector;
 import org.emathp.connector.google.mock.GoogleDriveConnector;
@@ -26,6 +27,7 @@ public final class SnapshotFileDemo {
     private SnapshotFileDemo() {}
 
     public static void runMockDemo() {
+        RuntimeEnv.loadDotEnv();
         System.out.println("=== Snapshot demo: MOCK connectors (provider batch 6 / 4, UI page 2) ===\n");
         Map<String, Connector> byName = new LinkedHashMap<>();
         byName.put("google", new GoogleDriveConnector());

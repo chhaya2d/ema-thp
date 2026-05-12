@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Refresh PR description before push (never blocks the push).
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+SCRIPT="$ROOT/scripts/generate-pr-description.sh"
+if [ -f "$SCRIPT" ]; then
+  sh "$SCRIPT" || true
+fi
+exit 0

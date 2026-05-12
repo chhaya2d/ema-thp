@@ -48,7 +48,6 @@ final class UnifiedSnapshotWebRunner {
     private final JoinExecutor joinExecutor;
     private final List<Connector> connectors;
     private final Map<String, Connector> connectorsByName;
-    private final UserContext user;
     private final SnapshotQueryService snapshotQueryService;
     private final SnapshotEnvironment snapshotEnv;
     private final int uiPageSize;
@@ -58,7 +57,6 @@ final class UnifiedSnapshotWebRunner {
             JoinExecutor joinExecutor,
             List<Connector> connectors,
             Map<String, Connector> connectorsByName,
-            UserContext user,
             SnapshotQueryService snapshotQueryService,
             SnapshotEnvironment snapshotEnv,
             int uiPageSize) {
@@ -66,7 +64,6 @@ final class UnifiedSnapshotWebRunner {
         this.joinExecutor = joinExecutor;
         this.connectors = connectors;
         this.connectorsByName = connectorsByName;
-        this.user = user;
         this.snapshotQueryService = snapshotQueryService;
         this.snapshotEnv = snapshotEnv;
         this.uiPageSize = uiPageSize;
@@ -77,31 +74,34 @@ final class UnifiedSnapshotWebRunner {
             Integer pageNumber,
             String uiCursorOffset,
             Integer requestPageSize,
-            Duration maxStaleness)
+            Duration maxStaleness,
+            UserContext requestUser)
             throws IOException {
 
         int effectivePageSize = effectiveUiPageSize(requestPageSize);
         int startRow = computeStartRow(pageNumber, uiCursorOffset, effectivePageSize);
 
         if (SnapshotMaterializationPolicy.requiresFullMaterialization(parsed)) {
-            return renderFullMaterializationResponse(parsed, startRow, effectivePageSize, maxStaleness);
+            return renderFullMaterializationResponse(
+                    parsed, startRow, effectivePageSize, maxStaleness, requestUser);
         }
-        return runSingle((Query) parsed, startRow, effectivePageSize, maxStaleness);
+        return runSingle((Query) parsed, startRow, effectivePageSize, maxStaleness, requestUser);
     }
 
-    private JsonObject runSingle(Query rawQuery, int startRow, int effectivePageSize, Duration maxStaleness)
+    private JsonObject runSingle(
+            Query rawQuery, int startRow, int effectivePageSize, Duration maxStaleness, UserContext requestUser)
             throws IOException {
         Query plannerQuery = rawQuery.withPagination(null, 1);
 
         String normalized = ParsedQueryNormalizer.canonicalSnapshotIdentity(rawQuery);
         String queryHash = QuerySnapshotHasher.hashForPath(normalized);
-        Path queryRoot = snapshotQueryService.queryRoot(snapshotEnv, user.userId(), queryHash);
+        Path queryRoot = snapshotQueryService.queryRoot(snapshotEnv, requestUser.userId(), queryHash);
 
         Instant now = Instant.now();
         boolean staleRestarted =
                 snapshotQueryService.pruneStaleQueryTreeIfNeeded(queryRoot, maxStaleness);
         snapshotQueryService.ensureQueryInfo(
-                queryRoot, queryHash, user.userId(), normalized, now.toString());
+                queryRoot, queryHash, requestUser.userId(), normalized, now.toString());
 
         String freshnessDecision = staleRestarted ? "stale_restarted" : "fresh";
 
@@ -121,7 +121,7 @@ final class UnifiedSnapshotWebRunner {
 
         JsonArray sides = new JsonArray();
         for (Connector c : connectors) {
-            sides.add(executeSideSnapshot(plannerQuery, c, queryRoot, maxStaleness));
+            sides.add(executeSideSnapshot(plannerQuery, c, queryRoot, maxStaleness, requestUser));
         }
         root.add("sides", sides);
 
@@ -132,18 +132,23 @@ final class UnifiedSnapshotWebRunner {
     }
 
     private JsonObject renderFullMaterializationResponse(
-            ParsedQuery pq, int startRow, int effectivePageSize, Duration maxStaleness) throws IOException {
+            ParsedQuery pq,
+            int startRow,
+            int effectivePageSize,
+            Duration maxStaleness,
+            UserContext requestUser)
+            throws IOException {
         JoinQuery jq = (JoinQuery) pq;
         boolean snap = snapshotQueryService.persistSnapshotMaterialization();
         String normalized = ParsedQueryNormalizer.canonicalSnapshotIdentity(jq);
         String queryHash = QuerySnapshotHasher.hashForPath(normalized);
-        Path queryRoot = snapshotQueryService.queryRoot(snapshotEnv, user.userId(), queryHash);
+        Path queryRoot = snapshotQueryService.queryRoot(snapshotEnv, requestUser.userId(), queryHash);
 
         Instant now = snapshotQueryService.clock().now();
         boolean staleRestarted =
                 snapshotQueryService.pruneStaleQueryTreeIfNeeded(queryRoot, maxStaleness);
         snapshotQueryService.ensureQueryInfo(
-                queryRoot, queryHash, user.userId(), normalized, now.toString());
+                queryRoot, queryHash, requestUser.userId(), normalized, now.toString());
 
         FullMaterializationCoordinator.Outcome out =
                 FullMaterializationCoordinator.run(
@@ -151,7 +156,7 @@ final class UnifiedSnapshotWebRunner {
                         snap,
                         queryRoot,
                         maxStaleness,
-                        user,
+                        requestUser,
                         joinExecutor,
                         connectorsByName,
                         snapshotQueryService.store(),
@@ -216,14 +221,18 @@ final class UnifiedSnapshotWebRunner {
     }
 
     private JsonObject executeSideSnapshot(
-            Query plannerQuery, Connector connector, Path queryRoot, Duration maxStaleness)
+            Query plannerQuery,
+            Connector connector,
+            Path queryRoot,
+            Duration maxStaleness,
+            UserContext requestUser)
             throws IOException {
 
         PushdownPlan plan = planner.plan(connector, plannerQuery);
         SidePageResult out =
                 snapshotQueryService.resolveSide(
                         new SidePageRequest(
-                                user,
+                                requestUser,
                                 connector,
                                 plannerQuery,
                                 queryRoot,

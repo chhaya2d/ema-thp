@@ -10,8 +10,6 @@ public final class WebDefaults {
 
     private WebDefaults() {}
 
-    public static final String EMA_WEB_USE_MOCK_CONNECTORS = "false";
-
     /**
      * When {@code true}, filesystem snapshot IO is allowed per {@link org.emathp.snapshot.policy.SnapshotMaterializationPolicy}
      * (incremental vs fully materialised). When {@code false}, all snapshot IO is skipped.
@@ -54,6 +52,12 @@ public final class WebDefaults {
 
     /** Alias for tests constructing runners explicitly. */
     public static final int UI_QUERY_PAGE_SIZE_TESTS = UI_QUERY_PAGE_SIZE_MOCK;
+
+    /**
+     * Demo connector mode UI page size (see {@link DemoConnectorDefaults#DEMO_UI_PAGE_SIZE}; kept
+     * here for {@link org.emathp.web.WebQueryRunner} wiring next to other UI defaults).
+     */
+    public static final int UI_QUERY_PAGE_SIZE_DEMO = DemoConnectorDefaults.DEMO_UI_PAGE_SIZE;
 
     /** OS env / {@code .env} override for {@link #EMA_PUSHDOWN_SNAPSHOT_RUN}. */
     public static boolean persistSnapshotMaterialization() {

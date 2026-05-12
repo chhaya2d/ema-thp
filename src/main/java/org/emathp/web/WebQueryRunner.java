@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 import org.emathp.auth.UserContext;
 import org.emathp.cache.QueryCacheScope;
-import org.emathp.config.WebDefaults;
 import org.emathp.connector.Connector;
 import org.emathp.engine.JoinExecutor;
 import org.emathp.engine.QueryExecutor;
@@ -22,6 +21,10 @@ import org.emathp.snapshot.model.SnapshotEnvironment;
 /**
  * Parses SQL and delegates single/join JSON responses to {@link UnifiedSnapshotWebRunner}. Snapshot
  * disk IO is gated by {@code EMA_PUSHDOWN_SNAPSHOT_RUN} and {@link org.emathp.planner.PushdownPlan}.
+ *
+ * <p>Per-request principal: {@link #run(String, Integer, String, Integer, Duration, QueryCacheScope)}
+ * builds {@link UserContext} from {@code scope.userId()} for connector calls and snapshot paths;
+ * {@link #cacheScope()} still reflects the runner's construction-time user (e.g. server default).
  */
 public final class WebQueryRunner {
 
@@ -48,7 +51,6 @@ public final class WebQueryRunner {
                         joinExecutor,
                         connectors,
                         connectorsByName,
-                        user,
                         snapshotQueryService,
                         snapshotEnv,
                         uiPageSize);
@@ -71,7 +73,9 @@ public final class WebQueryRunner {
             QueryCacheScope scope) {
         try {
             ParsedQuery parsed = parser.parse(sql);
-            return unified.runParsed(parsed, pageNumber, uiCursorOffset, requestPageSize, maxStaleness);
+            UserContext requestUser = new UserContext(scope.userId());
+            return unified.runParsed(
+                    parsed, pageNumber, uiCursorOffset, requestPageSize, maxStaleness, requestUser);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
