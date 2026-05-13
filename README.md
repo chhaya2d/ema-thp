@@ -37,7 +37,9 @@ Notion follows the same pattern: **mock** (`notion/mock`) and **demo** (`notion/
 
 ## Snapshots, cache scope, freshness
 
-- **`QueryCacheScope`** (`cache/QueryCacheScope.java`) namespaces snapshot paths by **`userId`** (and a **key schema version**), so different principals do not share on-disk snapshot trees.
+- **`QueryCacheScope`** (`cache/QueryCacheScope.java`) namespaces snapshot paths by **tenant**, **role**, **user**, and a **key schema version** (`snapshotScopeDirectoryName()`). Demo mode resolves tenant/role/tags via **`DemoPrincipalRegistry`**; the UI only picks **user id**.
+- **Tag policy** runs in the engine **after** residual WHERE/sort and **before** `LIMIT`. Persisted chunks therefore hold **post-tag-filter** rows (“cache after tag filter”), so switching role or allowed tags yields different snapshot segments without leaking filtered rows through disk reuse.
+- Demo connectors attach optional **`tags`** on rows (`DemoTags`); rows with missing or empty tags are **permissive**; when the active role has **allowedTags**, the row must intersect that set.
 - The web API accepts **`maxStaleness`** (ISO-8601 duration, e.g. `PT10M`) to bound reuse of snapshot materializations; default chunk TTL comes from **`WebDefaults.snapshotChunkFreshness()`** when omitted.
 
 ## Full vs incremental snapshot materialization
@@ -65,7 +67,7 @@ Notion follows the same pattern: **mock** (`notion/mock`) and **demo** (`notion/
 
 - **`gradlew run --args web`** starts **`org.emathp.web.DemoWebServer`**: embedded HTTP server (loopback), SQL playground posting JSON to **`/api/query`**.
 - **Connector mode** (UI / JSON **`connectorMode`**): **`live`** (real Google + mock Notion, OAuth), **`mock`** (mock Google + mock Notion), **`demo`** (demo Google + demo Notion with compiled delays/page sizes).
-- **Mock user** dropdown maps to **`UserContext`** for mock/demo via **`mockUserId`**.
+- **Mock user** dropdown maps to **`UserContext`** for mock/demo via **`mockUserId`**; JSON responses include resolved **`tenantId`** and **`roleSlug`** for demos.
 - **`env.example`** documents optional vs required variables for **live** Google.
 
 ## Git hook: PR description on push

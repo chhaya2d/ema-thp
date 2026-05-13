@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.expression.DoubleValue;
@@ -45,7 +46,9 @@ import org.emathp.model.Query;
  * <p>Supported single-source queries:
  * <ul>
  *   <li>{@code SELECT col1, col2, ...} (or {@code *})</li>
- *   <li>{@code FROM <anything>} (table name is currently ignored)</li>
+ *   <li>{@code FROM <table>} — base table name selects which connector(s) run: {@code resources}
+ *       (default fan-out to every registered connector), {@code notion}, {@code google} /
+ *       {@code google-drive}, etc.</li>
  *   <li>{@code WHERE} a single binary comparison: {@code =}, {@code >}, {@code <}, {@code LIKE}</li>
  *   <li>{@code ORDER BY <single column> [ASC|DESC]}</li>
  *   <li>{@code LIMIT <integer>}</li>
@@ -113,7 +116,33 @@ public final class SQLParserService {
         ComparisonExpr where = plain.getWhere() == null ? null : parseWhere(plain.getWhere());
         List<OrderBy> orderBy = parseOrderBy(plain.getOrderByElements());
         Integer limit = parseLimit(plain.getLimit());
-        return new Query(projection, where, orderBy, limit, null, null);
+        String fromTable = parseSingleSourceFromTable(plain);
+        return new Query(projection, where, orderBy, limit, null, null, fromTable);
+    }
+
+    /**
+     * Normalized {@code FROM} base name for single-source federation routing (see {@link
+     * org.emathp.web.SingleSourceConnectorSelector}).
+     */
+    private static String parseSingleSourceFromTable(PlainSelect plain) {
+        FromItem from = plain.getFromItem();
+        if (from instanceof Table t) {
+            String name = t.getName();
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("FROM requires a non-empty table name");
+            }
+            return normalizeSingleSourceTableName(name);
+        }
+        throw new IllegalArgumentException(
+                "Single-source queries require a plain base table in FROM (no subqueries/joins)");
+    }
+
+    private static String normalizeSingleSourceTableName(String raw) {
+        String t = raw.trim();
+        if ((t.startsWith("\"") && t.endsWith("\"")) || (t.startsWith("`") && t.endsWith("`"))) {
+            t = t.substring(1, t.length() - 1).trim();
+        }
+        return t.toLowerCase(Locale.ROOT);
     }
 
     private List<String> parseProjection(List<SelectItem<?>> items) {

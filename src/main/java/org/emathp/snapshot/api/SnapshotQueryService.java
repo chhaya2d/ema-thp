@@ -51,8 +51,8 @@ public final class SnapshotQueryService {
         return store;
     }
 
-    public Path queryRoot(SnapshotEnvironment env, String userId, String queryHash) {
-        return store.querySnapshotDir(env, userId, queryHash);
+    public Path queryRoot(SnapshotEnvironment env, String scopeSegment, String queryHash) {
+        return store.querySnapshotDir(env, scopeSegment, queryHash);
     }
 
     /** @return {@code true} if the tree was deleted due to staleness */
@@ -69,12 +69,12 @@ public final class SnapshotQueryService {
     }
 
     public void ensureQueryInfo(
-            Path queryRoot, String queryHash, String userId, String normalizedQuery, String createdAt)
+            Path queryRoot, String queryHash, String scopeSegment, String normalizedQuery, String createdAt)
             throws IOException {
         if (!persistSnapshotMaterialization) {
             return;
         }
-        store.ensureQueryInfo(queryRoot, queryHash, userId, normalizedQuery, createdAt);
+        store.ensureQueryInfo(queryRoot, queryHash, scopeSegment, normalizedQuery, createdAt);
     }
 
     public SidePageResult resolveSide(SidePageRequest request) throws IOException {

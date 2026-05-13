@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
 class PlannerTest {
 
     private static Query query(ComparisonExpr where, List<OrderBy> orderBy) {
-        return new Query(List.of(), where, orderBy, 4, null, 2);
+        return new Query(List.of(), where, orderBy, 4, null, 2, null);
     }
 
     private static ComparisonExpr titleEq() {

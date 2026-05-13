@@ -66,13 +66,13 @@ public final class JoinExecutor {
     private static Query perSideQuery(JoinSide side, JoinWhere where) {
         ComparisonExpr sideWhere =
                 (where != null && where.alias().equals(side.alias())) ? where.predicate() : null;
-        return new Query(List.of(), sideWhere, List.of(), null, null, null);
+        return new Query(List.of(), sideWhere, List.of(), null, null, null, null);
     }
 
     private List<EngineRow> executeSide(UserContext user, Connector connector, JoinSide side, JoinWhere where) {
         Query q = perSideQuery(side, where);
         var plan = planner.plan(connector, q);
-        return singleExecutor.execute(user, connector, plan.pushedQuery(), plan.residualOps(), null).rows();
+        return singleExecutor.execute(user, connector, plan.pushedQuery(), plan.residualOps(), null, null).rows();
     }
 
     private static List<EngineRow> hashJoin(

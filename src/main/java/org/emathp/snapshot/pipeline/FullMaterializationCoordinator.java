@@ -12,6 +12,8 @@ import org.emathp.auth.UserContext;
 import org.emathp.config.WebDefaults;
 import org.emathp.connector.Connector;
 import org.emathp.engine.JoinExecutor;
+import org.emathp.engine.policy.TagAccessPolicy;
+import org.emathp.engine.policy.TagRowFilter;
 import org.emathp.federation.MaterializedPage;
 import org.emathp.federation.MaterializedRowSet;
 import org.emathp.federation.OffsetCursorPager;
@@ -40,12 +42,13 @@ public final class FullMaterializationCoordinator {
             JoinExecutor joinExecutor,
             Map<String, Connector> connectorsByName,
             SnapshotStore store,
-            Clock clock)
+            Clock clock,
+            TagAccessPolicy tagPolicy)
             throws IOException {
 
         if (!persistenceEnabled) {
             return new Outcome(
-                    materializeAndPage(joinExecutor, user, connectorsByName, jq), false);
+                    materializeAndPage(joinExecutor, user, connectorsByName, jq, tagPolicy), false);
         }
 
         Instant now = clock.now();
@@ -64,6 +67,7 @@ public final class FullMaterializationCoordinator {
         }
 
         List<EngineRow> combined = joinExecutor.materialize(user, connectorsByName, jq);
+        combined = applyTagPolicy(combined, tagPolicy);
         MaterializedRowSet rowSet = MaterializedRowSet.limitedFrom(combined, jq.limit());
         MaterializedPage paged = OffsetCursorPager.page(rowSet, jq.cursor(), jq.pageSize());
 
@@ -93,9 +97,18 @@ public final class FullMaterializationCoordinator {
             JoinExecutor joinExecutor,
             UserContext user,
             Map<String, Connector> connectorsByName,
-            JoinQuery jq) {
+            JoinQuery jq,
+            TagAccessPolicy tagPolicy) {
         List<EngineRow> combined = joinExecutor.materialize(user, connectorsByName, jq);
+        combined = applyTagPolicy(combined, tagPolicy);
         MaterializedRowSet rowSet = MaterializedRowSet.limitedFrom(combined, jq.limit());
         return OffsetCursorPager.page(rowSet, jq.cursor(), jq.pageSize());
+    }
+
+    private static List<EngineRow> applyTagPolicy(List<EngineRow> rows, TagAccessPolicy tagPolicy) {
+        if (tagPolicy == null || tagPolicy.allowedTags().isEmpty()) {
+            return rows;
+        }
+        return TagRowFilter.apply(rows, tagPolicy);
     }
 }

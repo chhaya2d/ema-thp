@@ -73,9 +73,13 @@ public final class WebQueryRunner {
             QueryCacheScope scope) {
         try {
             ParsedQuery parsed = parser.parse(sql);
-            UserContext requestUser = new UserContext(scope.userId());
-            return unified.runParsed(
-                    parsed, pageNumber, uiCursorOffset, requestPageSize, maxStaleness, requestUser);
+            long t0 = System.nanoTime();
+            JsonObject result =
+                    unified.runParsed(
+                            parsed, pageNumber, uiCursorOffset, requestPageSize, maxStaleness, scope);
+            long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
+            result.addProperty("serverElapsedMs", elapsedMs);
+            return result;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

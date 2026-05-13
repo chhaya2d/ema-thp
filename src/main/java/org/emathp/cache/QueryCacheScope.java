@@ -3,35 +3,72 @@ package org.emathp.cache;
 import org.emathp.auth.UserContext;
 
 /**
- * Identity slice for snapshot paths and future cache keys so results never leak across callers.
+ * Identity slice for snapshot paths and cache keys so results never leak across tenants / roles.
  *
- * <p><b>Tradeoffs</b>
+ * <p>Filesystem layout uses {@link #snapshotScopeDirectoryName()} under each snapshot environment.
  *
- * <ul>
- *   <li><b>{@code userId} only (v1)</b> — Simple and safe: same SQL for two users never shares an
- *       entry. Lower hit rate when many users have identical connector data (rare in OAuth-backed
- *       flows but common in mocks).</li>
- *   <li><b>Future: tenant / account-set scope</b> — If you can prove two users resolve to the same
- *       backing accounts for every connector in the query, you may widen scope to a {@code
- *       dataScopeId} and share entries — higher hit rate, but the scope model must track token /
- *       ACL changes and invalidate or version keys when access changes.</li>
- *   <li><b>Anonymous ({@code userId == null})</b> — All anonymous callers share one lane; fine for
- *       mock demos, wrong for multi-tenant anonymous APIs.</li>
- * </ul>
- *
- * @param userId stable principal id, or {@code null} for anonymous
- * @param keySchemaVersion bump when serialization of {@link ParsedQueryNormalizer} changes to
- *                         avoid reading structurally incompatible cache entries
+ * @param userId stable principal id for connector calls (mock corpus / OAuth identity), or {@code
+ *     _} when absent
+ * @param tenantId logical tenant for isolation
+ * @param roleSlug active role for this request (demo uses primary role from {@link
+ *     org.emathp.web.DemoPrincipalRegistry})
+ * @param keySchemaVersion bump when serialization of snapshot identity changes
  */
-public record QueryCacheScope(String userId, int keySchemaVersion) {
+public record QueryCacheScope(String userId, String tenantId, String roleSlug, int keySchemaVersion) {
 
-    public static final int CURRENT_KEY_SCHEMA = 1;
+    public static final int CURRENT_KEY_SCHEMA = 2;
 
+    /**
+     * Anonymous / unspecified tenant snapshot lane — suitable only for single-user demos where no
+     * tenant metadata exists.
+     */
     public static QueryCacheScope from(UserContext ctx) {
-        return new QueryCacheScope(ctx.userId(), CURRENT_KEY_SCHEMA);
+        String uid = ctx.userId();
+        if (uid == null || uid.isBlank()) {
+            return new QueryCacheScope("_", "_anon", "guest", CURRENT_KEY_SCHEMA);
+        }
+        return new QueryCacheScope(uid, "_default", "_guest", CURRENT_KEY_SCHEMA);
+    }
+
+    /** Demo playground tenants / roles (see {@link org.emathp.web.DemoPrincipalRegistry}). */
+    public static QueryCacheScope forDemo(String userId, String tenantId, String roleSlug) {
+        String uid = userId == null || userId.isBlank() ? "_" : userId.trim();
+        String t = tenantId == null || tenantId.isBlank() ? "_" : tenantId.trim();
+        String r = roleSlug == null || roleSlug.isBlank() ? "guest" : roleSlug.trim();
+        return new QueryCacheScope(uid, t, r, CURRENT_KEY_SCHEMA);
     }
 
     String keySegment() {
-        return "u:" + (userId == null ? "_" : userId) + "|ksv:" + keySchemaVersion;
+        return "u:"
+                + (userId == null ? "_" : userId)
+                + "|t:"
+                + (tenantId == null ? "_" : tenantId)
+                + "|r:"
+                + (roleSlug == null ? "_" : roleSlug)
+                + "|ksv:"
+                + keySchemaVersion;
+    }
+
+    /**
+     * Single path segment for snapshot roots (tenant + role + user + schema version). Snapshot rows
+     * are stored <strong>after</strong> role tag filtering so different roles do not share cached row
+     * bytes.
+     */
+    public String snapshotScopeDirectoryName() {
+        return "t_"
+                + safeSegment(tenantId)
+                + "_r_"
+                + safeSegment(roleSlug)
+                + "_u_"
+                + safeSegment(userId)
+                + "_ksv"
+                + keySchemaVersion;
+    }
+
+    private static String safeSegment(String s) {
+        if (s == null || s.isBlank()) {
+            return "_";
+        }
+        return s.replaceAll("[^a-zA-Z0-9._-]", "_");
     }
 }

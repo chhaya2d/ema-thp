@@ -70,6 +70,8 @@ public final class ParsedQueryNormalizer {
         StringBuilder sb = new StringBuilder();
         sb.append("Q|v1|sel:");
         sb.append(String.join(",", mapSelect(q.select())));
+        sb.append("|from:");
+        sb.append(fromCanon(q.fromTable()));
         sb.append("|where:");
         sb.append(whereCanon(q.where()));
         sb.append("|ob:");
@@ -81,6 +83,13 @@ public final class ParsedQueryNormalizer {
         sb.append("|ps:");
         sb.append(q.pageSize() == null ? "_" : q.pageSize());
         return sb.toString();
+    }
+
+    private static String fromCanon(String fromTable) {
+        if (fromTable == null || fromTable.isBlank()) {
+            return "_";
+        }
+        return escape(fromTable.trim().toLowerCase(Locale.ROOT));
     }
 
     private static String canonicalJoin(JoinQuery j) {

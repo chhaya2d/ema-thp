@@ -11,16 +11,18 @@ import org.emathp.snapshot.model.SnapshotEnvironment;
 /**
  * Persistence port for snapshot trees (filesystem, in-memory, remote, etc.).
  *
- * <p>Layout convention: {@code <root>/<env>/<userId>/<queryHash>/} with per-connector subdirectories.
+ * <p>Layout convention: {@code <root>/<env>/<scopeSegment>/<queryHash>/} with per-connector
+ * subdirectories. {@code scopeSegment} typically encodes tenant + role + principal (see {@link
+ * org.emathp.cache.QueryCacheScope#snapshotScopeDirectoryName()}).
  */
 public interface SnapshotStore {
 
     Path baseRoot();
 
-    Path querySnapshotDir(SnapshotEnvironment env, String userId, String queryHash);
+    Path querySnapshotDir(SnapshotEnvironment env, String scopeSegment, String queryHash);
 
     void ensureQueryInfo(
-            Path queryDir, String queryHash, String userId, String normalizedQuery, String createdAt)
+            Path queryDir, String queryHash, String scopeSegment, String normalizedQuery, String createdAt)
             throws IOException;
 
     void deleteRecursively(Path queryDir) throws IOException;

@@ -15,9 +15,11 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import org.emathp.auth.UserContext;
 import org.emathp.cache.ParsedQueryNormalizer;
+import org.emathp.cache.QueryCacheScope;
 import org.emathp.connector.Connector;
 import org.emathp.engine.JoinExecutor;
 import org.emathp.engine.QueryExecutor;
+import org.emathp.engine.policy.TagAccessPolicy;
 import org.emathp.model.ComparisonExpr;
 import org.emathp.model.ConnectorQuery;
 import org.emathp.model.EngineRow;
@@ -75,33 +77,35 @@ final class UnifiedSnapshotWebRunner {
             String uiCursorOffset,
             Integer requestPageSize,
             Duration maxStaleness,
-            UserContext requestUser)
+            QueryCacheScope scope)
             throws IOException {
 
         int effectivePageSize = effectiveUiPageSize(requestPageSize);
         int startRow = computeStartRow(pageNumber, uiCursorOffset, effectivePageSize);
 
         if (SnapshotMaterializationPolicy.requiresFullMaterialization(parsed)) {
-            return renderFullMaterializationResponse(
-                    parsed, startRow, effectivePageSize, maxStaleness, requestUser);
+            return renderFullMaterializationResponse(parsed, startRow, effectivePageSize, maxStaleness, scope);
         }
-        return runSingle((Query) parsed, startRow, effectivePageSize, maxStaleness, requestUser);
+        return runSingle((Query) parsed, startRow, effectivePageSize, maxStaleness, scope);
     }
 
     private JsonObject runSingle(
-            Query rawQuery, int startRow, int effectivePageSize, Duration maxStaleness, UserContext requestUser)
+            Query rawQuery, int startRow, int effectivePageSize, Duration maxStaleness, QueryCacheScope scope)
             throws IOException {
         Query plannerQuery = rawQuery.withPagination(null, 1);
+        UserContext requestUser = new UserContext(scope.userId());
+        TagAccessPolicy tagPolicy = DemoPrincipalRegistry.tagPolicyFor(scope);
 
         String normalized = ParsedQueryNormalizer.canonicalSnapshotIdentity(rawQuery);
         String queryHash = QuerySnapshotHasher.hashForPath(normalized);
-        Path queryRoot = snapshotQueryService.queryRoot(snapshotEnv, requestUser.userId(), queryHash);
+        Path queryRoot =
+                snapshotQueryService.queryRoot(snapshotEnv, scope.snapshotScopeDirectoryName(), queryHash);
 
         Instant now = Instant.now();
         boolean staleRestarted =
                 snapshotQueryService.pruneStaleQueryTreeIfNeeded(queryRoot, maxStaleness);
         snapshotQueryService.ensureQueryInfo(
-                queryRoot, queryHash, requestUser.userId(), normalized, now.toString());
+                queryRoot, queryHash, scope.snapshotScopeDirectoryName(), normalized, now.toString());
 
         String freshnessDecision = staleRestarted ? "stale_restarted" : "fresh";
 
@@ -111,6 +115,10 @@ final class UnifiedSnapshotWebRunner {
         root.addProperty("queryHash", queryHash);
         root.addProperty("snapshotPath", queryRoot.toString());
         root.addProperty("freshnessDecision", freshnessDecision);
+        root.addProperty(
+                "snapshotTreeNote",
+                "freshnessDecision=stale_restarted means the on-disk query tree was deleted before this run; "
+                        + "per-side cached vs live is serveMode / snapshotReuseNoProviderCall.");
         root.addProperty("snapshotEnvironment", snapshotEnv.name());
         root.addProperty("snapshotBacked", snapshotQueryService.persistSnapshotMaterialization());
         if (maxStaleness != null) {
@@ -119,11 +127,25 @@ final class UnifiedSnapshotWebRunner {
             root.add("maxStaleness", JsonNull.INSTANCE);
         }
 
+        root.addProperty("tenantId", scope.tenantId());
+        root.addProperty("roleSlug", scope.roleSlug());
+
+        List<Connector> activeConnectors =
+                SingleSourceConnectorSelector.connectorsForSingleSource(
+                        rawQuery.fromTable(), connectors, connectorsByName);
+
+        JsonArray targets = new JsonArray();
+        for (Connector c : activeConnectors) {
+            targets.add(new JsonPrimitive(c.source()));
+        }
+        root.add("targetConnectors", targets);
+
         JsonArray sides = new JsonArray();
-        for (Connector c : connectors) {
-            sides.add(executeSideSnapshot(plannerQuery, c, queryRoot, maxStaleness, requestUser));
+        for (Connector c : activeConnectors) {
+            sides.add(executeSideSnapshot(plannerQuery, c, queryRoot, maxStaleness, requestUser, tagPolicy));
         }
         root.add("sides", sides);
+        root.addProperty("providerFetchSummary", summarizeSidesFetchMode(sides));
 
         enrichSingleSourceResumeCursors(root);
         attachSnapshotAudit(root, now);
@@ -136,19 +158,22 @@ final class UnifiedSnapshotWebRunner {
             int startRow,
             int effectivePageSize,
             Duration maxStaleness,
-            UserContext requestUser)
+            QueryCacheScope scope)
             throws IOException {
         JoinQuery jq = (JoinQuery) pq;
+        UserContext requestUser = new UserContext(scope.userId());
+        TagAccessPolicy tagPolicy = DemoPrincipalRegistry.tagPolicyFor(scope);
         boolean snap = snapshotQueryService.persistSnapshotMaterialization();
         String normalized = ParsedQueryNormalizer.canonicalSnapshotIdentity(jq);
         String queryHash = QuerySnapshotHasher.hashForPath(normalized);
-        Path queryRoot = snapshotQueryService.queryRoot(snapshotEnv, requestUser.userId(), queryHash);
+        Path queryRoot =
+                snapshotQueryService.queryRoot(snapshotEnv, scope.snapshotScopeDirectoryName(), queryHash);
 
         Instant now = snapshotQueryService.clock().now();
         boolean staleRestarted =
                 snapshotQueryService.pruneStaleQueryTreeIfNeeded(queryRoot, maxStaleness);
         snapshotQueryService.ensureQueryInfo(
-                queryRoot, queryHash, requestUser.userId(), normalized, now.toString());
+                queryRoot, queryHash, scope.snapshotScopeDirectoryName(), normalized, now.toString());
 
         FullMaterializationCoordinator.Outcome out =
                 FullMaterializationCoordinator.run(
@@ -160,7 +185,8 @@ final class UnifiedSnapshotWebRunner {
                         joinExecutor,
                         connectorsByName,
                         snapshotQueryService.store(),
-                        snapshotQueryService.clock());
+                        snapshotQueryService.clock(),
+                        tagPolicy);
 
         JsonArray pages = materializedPageArray(out.paged());
 
@@ -169,6 +195,8 @@ final class UnifiedSnapshotWebRunner {
         root.addProperty("ok", true);
         root.addProperty("queryHash", queryHash);
         root.addProperty("snapshotPath", queryRoot.toString());
+        root.addProperty("tenantId", scope.tenantId());
+        root.addProperty("roleSlug", scope.roleSlug());
         root.addProperty("freshnessDecision", staleRestarted ? "stale_restarted" : "fresh");
         root.addProperty("snapshotEnvironment", snapshotEnv.name());
         root.addProperty("snapshotBacked", snap);
@@ -225,7 +253,8 @@ final class UnifiedSnapshotWebRunner {
             Connector connector,
             Path queryRoot,
             Duration maxStaleness,
-            UserContext requestUser)
+            UserContext requestUser,
+            TagAccessPolicy tagPolicy)
             throws IOException {
 
         PushdownPlan plan = planner.plan(connector, plannerQuery);
@@ -237,7 +266,8 @@ final class UnifiedSnapshotWebRunner {
                                 plannerQuery,
                                 queryRoot,
                                 maxStaleness,
-                                SnapshotMaterializationPolicy.persistConnectorSideChunks(plan)));
+                                SnapshotMaterializationPolicy.persistConnectorSideChunks(plan),
+                                tagPolicy));
 
         QueryExecutor.ExecutionResult exec = out.execution();
 
@@ -260,6 +290,7 @@ final class UnifiedSnapshotWebRunner {
         o.addProperty("providerFetchesThisRequest", out.providerFetches());
         o.addProperty("continuationFetchesThisRequest", out.continuationFetches());
         o.addProperty("snapshotReuseNoProviderCall", out.snapshotReuseNoProviderCall());
+        o.addProperty("serveMode", out.snapshotReuseNoProviderCall() ? "cached" : "live");
 
         JsonArray chunkCreated = new JsonArray();
         for (String f : out.chunkFilesCreatedThisRequest()) {
@@ -282,6 +313,33 @@ final class UnifiedSnapshotWebRunner {
         }
 
         return o;
+    }
+
+    private static String summarizeSidesFetchMode(JsonArray sides) {
+        boolean anyCached = false;
+        boolean anyLive = false;
+        for (JsonElement el : sides) {
+            JsonObject s = el.getAsJsonObject();
+            boolean reuse =
+                    s.has("snapshotReuseNoProviderCall")
+                            && !s.get("snapshotReuseNoProviderCall").isJsonNull()
+                            && s.get("snapshotReuseNoProviderCall").getAsBoolean();
+            if (reuse) {
+                anyCached = true;
+            } else {
+                anyLive = true;
+            }
+        }
+        if (anyCached && !anyLive) {
+            return "all_cached";
+        }
+        if (!anyCached && anyLive) {
+            return "all_live";
+        }
+        if (anyCached && anyLive) {
+            return "mixed";
+        }
+        return "all_live";
     }
 
     private static void attachSnapshotAudit(JsonObject root, Instant runAt) {

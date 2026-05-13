@@ -79,7 +79,7 @@ class MockUserDataIsolationTest {
                         null,
                         null,
                         null,
-                        new QueryCacheScope("alice", QueryCacheScope.CURRENT_KEY_SCHEMA));
+                        DemoPrincipalRegistry.cacheScope("alice"));
         JsonObject bob =
                 runner.run(
                         sql,
@@ -87,7 +87,7 @@ class MockUserDataIsolationTest {
                         null,
                         null,
                         null,
-                        new QueryCacheScope("bob", QueryCacheScope.CURRENT_KEY_SCHEMA));
+                        DemoPrincipalRegistry.cacheScope("bob"));
         assertEquals(firstGoogleTitle(alice), firstGoogleTitle(bob));
     }
 
@@ -101,7 +101,7 @@ class MockUserDataIsolationTest {
                         null,
                         null,
                         null,
-                        new QueryCacheScope("alice", QueryCacheScope.CURRENT_KEY_SCHEMA));
+                        DemoPrincipalRegistry.cacheScope("alice"));
         JsonObject bob =
                 runner.run(
                         sql,
@@ -109,19 +109,19 @@ class MockUserDataIsolationTest {
                         null,
                         null,
                         null,
-                        new QueryCacheScope("bob", QueryCacheScope.CURRENT_KEY_SCHEMA));
+                        DemoPrincipalRegistry.cacheScope("bob"));
         assertNotEquals(alice.get("snapshotPath").getAsString(), bob.get("snapshotPath").getAsString());
-        assertTrue(alice.get("snapshotPath").getAsString().contains("alice"));
-        assertTrue(bob.get("snapshotPath").getAsString().contains("bob"));
+        assertTrue(alice.get("snapshotPath").getAsString().contains("u_alice"));
+        assertTrue(bob.get("snapshotPath").getAsString().contains("u_bob"));
     }
 
     @Test
-    void anonymousSnapshotUserSegmentIsUnderscore() {
+    void anonymousSnapshotUsesGuestScopeSegment() {
         String sql = "SELECT title FROM resources ORDER BY updatedAt DESC LIMIT 1";
-        JsonObject anon =
-                runner.run(sql, null, null, null, null, new QueryCacheScope(null, QueryCacheScope.CURRENT_KEY_SCHEMA));
+        QueryCacheScope anonScope = QueryCacheScope.from(UserContext.anonymous());
+        JsonObject anon = runner.run(sql, null, null, null, null, anonScope);
         Path p = Path.of(anon.get("snapshotPath").getAsString()).normalize();
-        assertEquals("_", p.getParent().getFileName().toString());
+        assertEquals(anonScope.snapshotScopeDirectoryName(), p.getParent().getFileName().toString());
     }
 
     private static String firstGoogleTitle(JsonObject root) {

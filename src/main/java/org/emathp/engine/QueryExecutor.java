@@ -5,6 +5,8 @@ import java.util.List;
 import org.emathp.auth.UserContext;
 import org.emathp.connector.Connector;
 import org.emathp.model.ConnectorQuery;
+import org.emathp.engine.policy.TagAccessPolicy;
+import org.emathp.engine.policy.TagRowFilter;
 import org.emathp.model.ResidualOps;
 import org.emathp.model.EngineRow;
 import org.emathp.model.SearchResult;
@@ -635,6 +637,20 @@ public final class QueryExecutor {
             ConnectorQuery initial,
             ResidualOps residual,
             Integer logicalLimit) {
+        return execute(user, connector, initial, residual, logicalLimit, null);
+    }
+
+    /**
+     * Applies optional {@link TagAccessPolicy} after residual ops and before logical LIMIT — rows
+     * persisted to snapshots are therefore already role-filtered when this policy is non-empty.
+     */
+    public ExecutionResult execute(
+            UserContext user,
+            Connector connector,
+            ConnectorQuery initial,
+            ResidualOps residual,
+            Integer logicalLimit,
+            TagAccessPolicy tagPolicy) {
 
         boolean hasResidual = !residual.isEmpty();
         // NOTE: when residuals are present, do NOT short-circuit the page loop on logicalLimit —
@@ -653,6 +669,10 @@ public final class QueryExecutor {
             if (!residual.orderBy().isEmpty()) {
                 rows = sortExecutor.apply(rows, residual.orderBy());
             }
+        }
+
+        if (tagPolicy != null && !tagPolicy.allowedTags().isEmpty()) {
+            rows = TagRowFilter.apply(rows, tagPolicy);
         }
 
         boolean limitStoppedAtCap = false;

@@ -35,21 +35,21 @@ public final class FsSnapshotStore implements SnapshotStore {
     }
 
     @Override
-    public Path querySnapshotDir(SnapshotEnvironment env, String userId, String queryHash) {
-        String uid = userId == null ? "_" : userId;
-        return baseRoot.resolve(env.dirName()).resolve(uid).resolve(queryHash);
+    public Path querySnapshotDir(SnapshotEnvironment env, String scopeSegment, String queryHash) {
+        String seg = scopeSegment == null || scopeSegment.isBlank() ? "_" : scopeSegment;
+        return baseRoot.resolve(env.dirName()).resolve(seg).resolve(queryHash);
     }
 
     @Override
     public void ensureQueryInfo(
-            Path queryDir, String queryHash, String userId, String normalizedQuery, String createdAt)
+            Path queryDir, String queryHash, String scopeSegment, String normalizedQuery, String createdAt)
             throws IOException {
         Files.createDirectories(queryDir);
         Path f = queryDir.resolve("query_info.json");
         if (Files.exists(f)) {
             return;
         }
-        QueryInfo info = new QueryInfo(queryHash, userId, normalizedQuery, createdAt);
+        QueryInfo info = new QueryInfo(queryHash, scopeSegment, normalizedQuery, createdAt);
         SnapshotJson.mapper().writeValue(f.toFile(), info);
     }
 

@@ -11,6 +11,7 @@ import java.util.Optional;
 import org.emathp.auth.UserContext;
 import org.emathp.connector.Connector;
 import org.emathp.engine.QueryExecutor;
+import org.emathp.engine.policy.TagAccessPolicy;
 import org.emathp.model.EngineRow;
 import org.emathp.model.Query;
 import org.emathp.planner.Planner;
@@ -85,13 +86,16 @@ public final class SingleSourceSidePipeline {
             }
         }
 
+        TagAccessPolicy tagPolicy =
+                request.tagPolicy() == null ? TagAccessPolicy.unrestricted() : request.tagPolicy();
         QueryExecutor.ExecutionResult er =
                 executor.execute(
                         user,
                         connector,
                         plan.pushedQuery(),
                         plan.residualOps(),
-                        plannerQuery.limit());
+                        plannerQuery.limit(),
+                        tagPolicy);
 
         Duration ttl = maxStaleness != null ? maxStaleness : defaultWriteTtl;
         Instant freshnessUntil = now.plus(ttl);

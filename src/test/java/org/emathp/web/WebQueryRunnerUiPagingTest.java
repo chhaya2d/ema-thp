@@ -66,7 +66,7 @@ class WebQueryRunnerUiPagingTest {
                         snapshots,
                         SnapshotEnvironment.TEST,
                         WebDefaults.UI_QUERY_PAGE_SIZE_TESTS);
-        scope = runner.cacheScope();
+        scope = DemoPrincipalRegistry.cacheScope("alice");
     }
 
     private static JsonObject googleDriveSide(JsonObject root) {
@@ -147,6 +147,28 @@ class WebQueryRunnerUiPagingTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> runner.run(sqlWide(), null, "not-a-number", null, null, scope));
+    }
+
+    @Test
+    void singleSource_fromNotion_runsNotionSideOnly() {
+        String sql =
+                "SELECT title, updatedAt FROM notion WHERE updatedAt > '2020-01-01' ORDER BY updatedAt DESC LIMIT 20";
+        JsonObject root = runner.run(sql, null, null, null, null, scope);
+        assertEquals("single", root.get("kind").getAsString());
+        assertEquals(1, root.getAsJsonArray("targetConnectors").size());
+        assertEquals("notion", root.getAsJsonArray("targetConnectors").get(0).getAsString());
+        assertEquals(1, root.getAsJsonArray("sides").size());
+        assertEquals("notion", notionSide(root).get("connector").getAsString());
+        assertTrue(root.has("serverElapsedMs"));
+    }
+
+    @Test
+    void singleSource_fromGoogle_runsGoogleSideOnly() {
+        String sql =
+                "SELECT title, updatedAt FROM google WHERE updatedAt > '2020-01-01' ORDER BY updatedAt DESC LIMIT 20";
+        JsonObject root = runner.run(sql, null, null, null, null, scope);
+        assertEquals(1, root.getAsJsonArray("sides").size());
+        assertEquals("google-drive", googleDriveSide(root).get("connector").getAsString());
     }
 
     @Test

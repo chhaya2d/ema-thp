@@ -219,7 +219,7 @@ class FederatedDemosTest {
     private static Query joinSideQuery(JoinSide side, JoinWhere where) {
         ComparisonExpr sideWhere =
                 (where != null && where.alias().equals(side.alias())) ? where.predicate() : null;
-        return new Query(List.of(), sideWhere, List.of(), null, null, null);
+        return new Query(List.of(), sideWhere, List.of(), null, null, null, null);
     }
 
     private Query parseSingleSourceDemo1() {

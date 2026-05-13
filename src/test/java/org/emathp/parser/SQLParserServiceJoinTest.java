@@ -32,6 +32,14 @@ class SQLParserServiceJoinTest {
         ParsedQuery pq = parser.parse(
                 "SELECT title FROM resources WHERE updatedAt > '2026-01-01' LIMIT 5");
         assertInstanceOf(Query.class, pq);
+        Query q = (Query) pq;
+        assertEquals("resources", q.fromTable());
+    }
+
+    @Test
+    void singleSource_fromNotion_recordsTableForRouting() {
+        Query q = (Query) parser.parse("SELECT title FROM notion LIMIT 5");
+        assertEquals("notion", q.fromTable());
     }
 
     // ---- Happy path: aliases, qualified select, canonical ON ----
