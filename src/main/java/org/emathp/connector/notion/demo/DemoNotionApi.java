@@ -1,8 +1,10 @@
 package org.emathp.connector.notion.demo;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.emathp.config.DemoConnectorDefaults;
@@ -12,7 +14,8 @@ import org.emathp.connector.notion.api.NotionSearchResponse;
 
 /**
  * Demo Notion pages aligned with {@link org.emathp.connector.google.demo.DemoGoogleDriveApi} titles
- * for join UI experiments (same delay source as Google demo).
+ * for join UI experiments. The full eight-page corpus is returned for every user; tags + role policy
+ * gate visibility in the engine (same delay source as Google demo).
  */
 public final class DemoNotionApi {
 
@@ -58,6 +61,39 @@ public final class DemoNotionApi {
                     Instant.parse("2026-05-07T14:00:00Z"),
                     "https://www.notion.so/demo-n-b4"));
 
+    /**
+     * Index-aligned with {@link #DEMO_PAGES}: same order, same length (validated when building {@link
+     * #TAGS_BY_PAGE_ID}).
+     */
+    private static final List<List<String>> DEMO_PAGE_TAGS =
+            List.of(
+                    List.of("hr", "engineering"),
+                    List.of("hr", "engineering"),
+                    List.of("hr", "engineering"),
+                    List.of("hr"),
+                    List.of("hr", "engineering"),
+                    List.of("hr", "engineering"),
+                    List.of("engineering"),
+                    List.of("engineering"));
+
+    private static final Map<String, List<String>> TAGS_BY_PAGE_ID = indexTagsByPageId();
+
+    private static Map<String, List<String>> indexTagsByPageId() {
+        if (DEMO_PAGES.size() != DEMO_PAGE_TAGS.size()) {
+            throw new IllegalStateException(
+                    "demo page/tag count mismatch: " + DEMO_PAGES.size() + " vs " + DEMO_PAGE_TAGS.size());
+        }
+        Map<String, List<String>> m = new LinkedHashMap<>();
+        for (int i = 0; i < DEMO_PAGES.size(); i++) {
+            m.put(DEMO_PAGES.get(i).pageId(), List.copyOf(DEMO_PAGE_TAGS.get(i)));
+        }
+        return Map.copyOf(m);
+    }
+
+    public static List<String> tagsForPageId(String pageId) {
+        return TAGS_BY_PAGE_ID.getOrDefault(pageId, List.of());
+    }
+
     private static final Pattern TITLE_EQ =
             Pattern.compile("^\\s*title\\s*=\\s*'((?:[^'\\\\]|\\\\.)*)'\\s*$", Pattern.CASE_INSENSITIVE);
     private static final Pattern TITLE_CONTAINS =
@@ -69,9 +105,13 @@ public final class DemoNotionApi {
     private static final Pattern EDITED_LT =
             Pattern.compile("^\\s*lastEditedTime\\s*<\\s*'([^']+)'\\s*$", Pattern.CASE_INSENSITIVE);
 
+    /**
+     * @param actingUserId ignored; the demo corpus is shared for every principal (access via {@code
+     *     tags} + role policy).
+     */
     public NotionSearchResponse search(NotionSearchRequest request, String actingUserId) {
         sleepDemoDelay();
-        List<NotionPage> corpus = corpusForUser(actingUserId);
+        List<NotionPage> corpus = sharedCorpus();
         List<NotionPage> filtered = corpus.stream().filter(p -> matches(p, request.filter())).toList();
 
         int total = filtered.size();
@@ -100,18 +140,8 @@ public final class DemoNotionApi {
         }
     }
 
-    private List<NotionPage> corpusForUser(String actingUserId) {
-        if (actingUserId == null || actingUserId.isBlank()) {
-            return DEMO_PAGES;
-        }
-        String u = actingUserId.trim().toLowerCase(Locale.ROOT);
-        if ("alice".equals(u)) {
-            return DEMO_PAGES.subList(0, 4);
-        }
-        if ("bob".equals(u)) {
-            return DEMO_PAGES.subList(4, DEMO_PAGES.size());
-        }
-        return List.of();
+    private static List<NotionPage> sharedCorpus() {
+        return DEMO_PAGES;
     }
 
     private static int parseCursor(String cursor) {

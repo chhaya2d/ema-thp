@@ -18,7 +18,7 @@ This README summarizes how connectors, pushdown, snapshots, tests, and the demo 
 |----------------|---------|------|
 | **Real** | `connector/google/real/` | **`RealGoogleDriveConnector`**: OAuth (PKCE), **`GoogleApiClient`**, tokens loaded/stored via **`GoogleTokenStore`**. |
 | **Mock** | `connector/google/mock/` | **`GoogleDriveConnector`** + **`MockGoogleDriveApi`**: in-memory fixture; full **eight-row** corpus per principal for pagination tests; delay via **`MockConnectorDefaults`** (`MockConnectorDevSettings.compiled()` on the demo server). |
-| **Demo** | `connector/google/demo/` | **`DemoGoogleDriveConnector`** + **`DemoGoogleDriveApi`**: fixed join-oriented corpus (**alice** / **bob** slices), **`DemoConnectorDefaults`** for delay and page size. |
+| **Demo** | `connector/google/demo/` | **`DemoGoogleDriveConnector`** + **`DemoGoogleDriveApi`**: shared eight-file corpus for every user; parallel **`DEMO_FILE_TAGS`** (same order as files) supplies **`hr`** / **`engineering`** on rows; **`DemoConnectorDefaults`** for delay and page size. |
 
 Notion follows the same pattern: **mock** (`notion/mock`) and **demo** (`notion/demo`) translators/APIs align titles with the demo Drive corpus for join experiments.
 
@@ -39,7 +39,7 @@ Notion follows the same pattern: **mock** (`notion/mock`) and **demo** (`notion/
 
 - **`QueryCacheScope`** (`cache/QueryCacheScope.java`) namespaces snapshot paths by **tenant**, **role**, **user**, and a **key schema version** (`snapshotScopeDirectoryName()`). Demo mode resolves tenant/role/tags via **`DemoPrincipalRegistry`**; the UI only picks **user id**.
 - **Tag policy** runs in the engine **after** residual WHERE/sort and **before** `LIMIT`. Persisted chunks therefore hold **post-tag-filter** rows (“cache after tag filter”), so switching role or allowed tags yields different snapshot segments without leaking filtered rows through disk reuse.
-- Demo connectors attach optional **`tags`** on rows (`DemoTags`); rows with missing or empty tags are **permissive**; when the active role has **allowedTags**, the row must intersect that set.
+- Demo connectors attach optional **`tags`** on rows (parallel tag lists in each demo API file); rows with missing or empty tags are **permissive**; when the active role has **allowedTags**, the row must intersect that set.
 - The web API accepts **`maxStaleness`** (ISO-8601 duration, e.g. `PT10M`) to bound reuse of snapshot materializations; default chunk TTL comes from **`WebDefaults.snapshotChunkFreshness()`** when omitted.
 
 ## Full vs incremental snapshot materialization

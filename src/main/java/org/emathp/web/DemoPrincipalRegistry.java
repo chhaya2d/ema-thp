@@ -20,21 +20,17 @@ public final class DemoPrincipalRegistry {
         BY_USER.put(
                 "alice",
                 new DemoPrincipal(
-                        "demo-org",
-                        "finance",
-                        List.of("finance", "engineering"),
-                        Map.of(
-                                "finance",
-                                Set.of("finance", "shared"),
-                                "engineering",
-                                Set.of("engineering", "shared"))));
+                        "tenant-1",
+                        "hr",
+                        List.of("hr"),
+                        Map.of("hr", Set.of("hr", "engineering"))));
         BY_USER.put(
                 "bob",
                 new DemoPrincipal(
-                        "demo-org",
+                        "tenant-1",
                         "engineering",
                         List.of("engineering"),
-                        Map.of("engineering", Set.of("engineering", "shared"))));
+                        Map.of("engineering", Set.of("engineering"))));
     }
 
     private DemoPrincipalRegistry() {}

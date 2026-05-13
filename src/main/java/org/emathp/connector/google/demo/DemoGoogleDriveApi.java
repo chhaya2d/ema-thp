@@ -2,8 +2,10 @@ package org.emathp.connector.google.demo;
 
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.emathp.connector.google.api.GoogleDriveFile;
@@ -12,80 +14,114 @@ import org.emathp.connector.google.api.GoogleSearchResponse;
 import org.emathp.config.DemoConnectorDefaults;
 
 /**
- * In-memory Google Drive mock for <strong>demo</strong> mode: two principals ({@code alice},
- * {@code bob}), four files each (eight total). Three {@code alice} files share one title with
- * Notion demo pages; two {@code bob} files share another title for join experiments.
+ * In-memory Google Drive fixture for <strong>demo</strong> mode: eight files shared by every demo
+ * user; row visibility is enforced in the engine via {@code tags} on materialized rows, not by
+ * slicing the corpus per {@code UserContext}.
  *
  * <p>Uses the same query DSL regex layer as {@link org.emathp.connector.google.mock.MockGoogleDriveApi}.
  */
 public final class DemoGoogleDriveApi {
 
-    /** Three shared titles for alice + notion; two for bob + notion. */
+    /** Join-friendly titles (alpha/beta keys); extras exercise HR-only vs engineering-only tags. */
     private static final List<GoogleDriveFile> DEMO_FILES = List.of(
             new GoogleDriveFile(
                     "demo-g-a1",
                     "JoinKeyAlpha",
-                    "alice",
-                    List.of("alice"),
+                    "tenant-1",
+                    List.of(),
                     Instant.parse("2026-03-01T10:00:00Z"),
                     Instant.parse("2026-06-10T12:00:00Z"),
                     "https://drive.google.com/file/d/demo-g-a1/view"),
             new GoogleDriveFile(
                     "demo-g-a2",
                     "JoinKeyAlpha",
-                    "alice",
-                    List.of("alice"),
+                    "tenant-1",
+                    List.of(),
                     Instant.parse("2026-03-02T10:00:00Z"),
                     Instant.parse("2026-06-09T12:00:00Z"),
                     "https://drive.google.com/file/d/demo-g-a2/view"),
             new GoogleDriveFile(
                     "demo-g-a3",
                     "JoinKeyAlpha",
-                    "alice",
-                    List.of("alice"),
+                    "tenant-1",
+                    List.of(),
                     Instant.parse("2026-03-03T10:00:00Z"),
                     Instant.parse("2026-06-08T12:00:00Z"),
                     "https://drive.google.com/file/d/demo-g-a3/view"),
             new GoogleDriveFile(
                     "demo-g-a4",
                     "AliceDriveExtra",
-                    "alice",
-                    List.of("alice"),
+                    "tenant-1",
+                    List.of(),
                     Instant.parse("2026-03-04T10:00:00Z"),
                     Instant.parse("2026-06-07T12:00:00Z"),
                     "https://drive.google.com/file/d/demo-g-a4/view"),
             new GoogleDriveFile(
                     "demo-g-b1",
                     "JoinKeyBeta",
-                    "bob",
-                    List.of("bob"),
+                    "tenant-1",
+                    List.of(),
                     Instant.parse("2026-04-01T10:00:00Z"),
                     Instant.parse("2026-05-10T12:00:00Z"),
                     "https://drive.google.com/file/d/demo-g-b1/view"),
             new GoogleDriveFile(
                     "demo-g-b2",
                     "JoinKeyBeta",
-                    "bob",
-                    List.of("bob"),
+                    "tenant-1",
+                    List.of(),
                     Instant.parse("2026-04-02T10:00:00Z"),
                     Instant.parse("2026-05-09T12:00:00Z"),
                     "https://drive.google.com/file/d/demo-g-b2/view"),
             new GoogleDriveFile(
                     "demo-g-b3",
                     "BobDriveExtra1",
-                    "bob",
-                    List.of("bob"),
+                    "tenant-1",
+                    List.of(),
                     Instant.parse("2026-04-03T10:00:00Z"),
                     Instant.parse("2026-05-08T12:00:00Z"),
                     "https://drive.google.com/file/d/demo-g-b3/view"),
             new GoogleDriveFile(
                     "demo-g-b4",
                     "BobDriveExtra2",
-                    "bob",
-                    List.of("bob"),
+                    "tenant-1",
+                    List.of(),
                     Instant.parse("2026-04-04T10:00:00Z"),
                     Instant.parse("2026-05-07T12:00:00Z"),
                     "https://drive.google.com/file/d/demo-g-b4/view"));
+
+    /**
+     * Index-aligned with {@link #DEMO_FILES}: same order, same length (validated when building {@link
+     * #TAGS_BY_FILE_ID}).
+     */
+    private static final List<List<String>> DEMO_FILE_TAGS =
+            List.of(
+                    List.of("hr", "engineering"),
+                    List.of("hr", "engineering"),
+                    List.of("hr", "engineering"),
+                    List.of("hr"),
+                    List.of("hr", "engineering"),
+                    List.of("hr", "engineering"),
+                    List.of("engineering"),
+                    List.of("engineering"));
+
+    private static final Map<String, List<String>> TAGS_BY_FILE_ID = indexTagsByFileId();
+
+    private static Map<String, List<String>> indexTagsByFileId() {
+        if (DEMO_FILES.size() != DEMO_FILE_TAGS.size()) {
+            throw new IllegalStateException(
+                    "demo file/tag count mismatch: " + DEMO_FILES.size() + " vs " + DEMO_FILE_TAGS.size());
+        }
+        Map<String, List<String>> m = new LinkedHashMap<>();
+        for (int i = 0; i < DEMO_FILES.size(); i++) {
+            m.put(DEMO_FILES.get(i).id(), List.copyOf(DEMO_FILE_TAGS.get(i)));
+        }
+        return Map.copyOf(m);
+    }
+
+    /** Tags for a fixture file id (after filtering, rows are still keyed by id). */
+    public static List<String> tagsForFileId(String fileId) {
+        return TAGS_BY_FILE_ID.getOrDefault(fileId, List.of());
+    }
 
     private static final Pattern NAME_EQ =
             Pattern.compile("^\\s*name\\s*=\\s*'((?:[^'\\\\]|\\\\.)*)'\\s*$", Pattern.CASE_INSENSITIVE);
@@ -98,9 +134,13 @@ public final class DemoGoogleDriveApi {
     private static final Pattern UPDATED_LT =
             Pattern.compile("^\\s*updatedAt\\s*<\\s*'([^']+)'\\s*$", Pattern.CASE_INSENSITIVE);
 
+    /**
+     * @param actingUserId ignored; the demo corpus is shared for every principal (access via {@code
+     *     tags} + role policy).
+     */
     public GoogleSearchResponse search(GoogleSearchRequest request, String actingUserId) {
         sleepDemoDelay();
-        List<GoogleDriveFile> corpus = corpusForUser(actingUserId);
+        List<GoogleDriveFile> corpus = sharedCorpus();
         List<GoogleDriveFile> filtered =
                 corpus.stream()
                         .filter(f -> matchesQuery(f, request.q()))
@@ -132,18 +172,9 @@ public final class DemoGoogleDriveApi {
         }
     }
 
-    private List<GoogleDriveFile> corpusForUser(String actingUserId) {
-        if (actingUserId == null || actingUserId.isBlank()) {
-            return DEMO_FILES;
-        }
-        String u = actingUserId.trim().toLowerCase(Locale.ROOT);
-        if ("alice".equals(u)) {
-            return DEMO_FILES.subList(0, 4);
-        }
-        if ("bob".equals(u)) {
-            return DEMO_FILES.subList(4, DEMO_FILES.size());
-        }
-        return List.of();
+    /** Same eight files for every principal; access control is via row {@code tags}, not API slicing. */
+    private static List<GoogleDriveFile> sharedCorpus() {
+        return DEMO_FILES;
     }
 
     private static int parseToken(String token) {

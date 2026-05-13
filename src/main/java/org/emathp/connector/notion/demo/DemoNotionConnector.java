@@ -8,7 +8,6 @@ import org.emathp.auth.UserContext;
 import org.emathp.connector.CapabilitySet;
 import org.emathp.connector.Connector;
 import org.emathp.config.DemoConnectorDefaults;
-import org.emathp.connector.demo.DemoTags;
 import org.emathp.connector.notion.api.NotionPage;
 import org.emathp.connector.notion.api.NotionSearchResponse;
 import org.emathp.connector.notion.mock.NotionQueryTranslator;
@@ -63,7 +62,7 @@ public final class DemoNotionConnector implements Connector {
         m.put("title", page.title());
         m.put("updatedAt", page.lastEditedTime());
         m.put("url", page.url());
-        m.put("tags", DemoTags.forNotionPageId(page.pageId()));
+        m.put("tags", DemoNotionApi.tagsForPageId(page.pageId()));
         return new EngineRow(m);
     }
 }

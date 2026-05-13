@@ -8,7 +8,6 @@ import org.emathp.auth.UserContext;
 import org.emathp.connector.CapabilitySet;
 import org.emathp.connector.Connector;
 import org.emathp.config.DemoConnectorDefaults;
-import org.emathp.connector.demo.DemoTags;
 import org.emathp.connector.google.api.GoogleDriveFile;
 import org.emathp.connector.google.api.GoogleSearchResponse;
 import org.emathp.connector.google.mock.GoogleQueryTranslator;
@@ -67,7 +66,7 @@ public final class DemoGoogleDriveConnector implements Connector {
         m.put("owner", file.owner());
         m.put("createdAt", file.createdAt());
         m.put("modifiers", file.modifiers());
-        m.put("tags", DemoTags.forDriveFileId(file.id()));
+        m.put("tags", DemoGoogleDriveApi.tagsForFileId(file.id()));
         return new EngineRow(m);
     }
 }
