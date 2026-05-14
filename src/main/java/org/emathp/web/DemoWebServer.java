@@ -174,8 +174,9 @@ public final class DemoWebServer {
     /** Demo principals only (fixture corpus). */
     private static String demoUserSelectSection() {
         return "<p><label>User <select id=\"mockUserSelect\">"
-                + "<option value=\"alice\" selected>alice</option>"
-                + "<option value=\"bob\">bob</option>"
+                + "<option value=\"alice\" selected>alice (tenant-1, hr)</option>"
+                + "<option value=\"bob\">bob (tenant-1, engineering)</option>"
+                + "<option value=\"carol\">carol (tenant-2, hr)</option>"
                 + "</select></label></p>\n";
     }
 
