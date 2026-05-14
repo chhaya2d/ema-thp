@@ -1,12 +1,13 @@
 package org.emathp.connector;
 
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.emathp.auth.UserContext;
 import org.emathp.model.ConnectorQuery;
 import org.emathp.model.EngineRow;
 import org.emathp.model.SearchResult;
 
-/** Test wrapper: counts {@link #search} invocations. */
+/** Test wrapper: counts {@link #search} invocations; delegates every other capability. */
 public final class CountingConnector implements Connector {
 
     private final Connector delegate;
@@ -28,6 +29,16 @@ public final class CountingConnector implements Connector {
     @Override
     public int defaultFetchPageSize() {
         return delegate.defaultFetchPageSize();
+    }
+
+    @Override
+    public Duration defaultFreshnessTtl() {
+        return delegate.defaultFreshnessTtl();
+    }
+
+    @Override
+    public DataScope dataScope() {
+        return delegate. dataScope();
     }
 
     @Override

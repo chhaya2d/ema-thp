@@ -8,6 +8,7 @@ import java.util.Set;
 import org.emathp.auth.UserContext;
 import org.emathp.connector.CapabilitySet;
 import org.emathp.connector.Connector;
+import org.emathp.connector.DataScope;
 import org.emathp.config.DemoConnectorDefaults;
 import org.emathp.connector.notion.api.NotionPage;
 import org.emathp.connector.notion.api.NotionSearchResponse;
@@ -47,6 +48,12 @@ public final class DemoNotionConnector implements Connector {
     @Override
     public Duration defaultFreshnessTtl() {
         return Duration.ofMinutes(2);
+    }
+
+    /** Demo fixture is shared across users; tenant/role-scoped for cache sharing. */
+    @Override
+    public DataScope dataScope() {
+        return DataScope.TENANT_ROLE;
     }
 
     @Override

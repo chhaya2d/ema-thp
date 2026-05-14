@@ -11,13 +11,16 @@ import org.emathp.authz.PrincipalRegistry;
 
 /**
  * In-memory demo principals for the browser playground, CLI demos, and showcase integration
- * tests. Three principals span the isolation matrix:
+ * tests. Four principals span the isolation matrix:
  *
  * <ul>
  *   <li>{@code alice} — tenant-1, role {@code hr}, allowed tags {@code {hr, engineering}}.</li>
  *   <li>{@code bob}   — tenant-1, role {@code engineering}, allowed tags {@code {engineering}}.</li>
- *   <li>{@code carol} — tenant-2, role {@code hr} (same role as alice, different tenant). Used by
- *       the snapshot tenant-isolation showcase.</li>
+ *   <li>{@code carol} — tenant-2, role {@code hr} (same role as alice, different tenant). Used
+ *       by the snapshot tenant-isolation showcase.</li>
+ *   <li>{@code dan}   — tenant-1, role {@code hr} (same tenant AND role as alice; different
+ *       userId). Used to demonstrate cache sharing when connectors declare non-USER {@link
+ *       org.emathp.connector.DataScope}.</li>
  * </ul>
  *
  * <p>Replace with a JDBC- or claims-backed {@link PrincipalRegistry} for production wiring; no
@@ -47,6 +50,13 @@ public final class DemoPrincipalRegistry implements PrincipalRegistry {
                 "carol",
                 new Principal(
                         "tenant-2",
+                        "hr",
+                        List.of("hr"),
+                        Map.of("hr", Set.of("hr", "engineering"))));
+        m.put(
+                "dan",
+                new Principal(
+                        "tenant-1",
                         "hr",
                         List.of("hr"),
                         Map.of("hr", Set.of("hr", "engineering"))));

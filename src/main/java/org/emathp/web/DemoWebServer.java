@@ -177,6 +177,7 @@ public final class DemoWebServer {
                 + "<option value=\"alice\" selected>alice (tenant-1, hr)</option>"
                 + "<option value=\"bob\">bob (tenant-1, engineering)</option>"
                 + "<option value=\"carol\">carol (tenant-2, hr)</option>"
+                + "<option value=\"dan\">dan (tenant-1, hr) — shares cache with alice</option>"
                 + "</select></label></p>\n";
     }
 

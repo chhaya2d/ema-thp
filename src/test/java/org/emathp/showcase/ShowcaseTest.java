@@ -252,13 +252,57 @@ class ShowcaseTest {
         assertNotEquals(alicePath, carolPath, "alice vs carol: tenant differs → path differs");
         assertNotEquals(bobPath, carolPath, "bob vs carol: tenant + role both differ → path differs");
 
-        // Path segments reflect the scope's (tenant, role, user) tuple.
-        assertTrue(alicePath.contains("t_tenant-1"), "alice path tagged with tenant-1");
-        assertTrue(alicePath.contains("r_hr"), "alice path tagged with role hr");
-        assertTrue(bobPath.contains("t_tenant-1"), "bob path tagged with tenant-1");
-        assertTrue(bobPath.contains("r_engineering"), "bob path tagged with role engineering");
-        assertTrue(carolPath.contains("t_tenant-2"), "carol path tagged with tenant-2");
-        assertTrue(carolPath.contains("r_hr"), "carol path tagged with role hr");
+        // Demo connectors declare TENANT_ROLE scope, so the snapshot path excludes userId — two
+        // users with the same (tenant, role) would share the directory (see Test #11). The
+        // segments still reflect tenant + role.
+        assertTrue(alicePath.contains("t_tenant-1") && alicePath.contains("r_hr"),
+                "alice path tagged with tenant-1 + hr");
+        assertTrue(bobPath.contains("t_tenant-1") && bobPath.contains("r_engineering"),
+                "bob path tagged with tenant-1 + engineering");
+        assertTrue(carolPath.contains("t_tenant-2") && carolPath.contains("r_hr"),
+                "carol path tagged with tenant-2 + hr");
+        // Demo connectors → snapshotKeyedByUser is false. No userId in path.
+        assertFalse(alicePath.contains("u_alice"),
+                "demo connectors are TENANT_ROLE-scoped; path must not include userId");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 11. Cache sharing — same tenant + role, different users
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("11. Cache sharing for TENANT_ROLE connectors: alice and dan (both t1/hr) share the snapshot path; dan's run is a cache HIT")
+    void snapshot_cache_sharing_across_users_with_same_tenant_and_role(@TempDir Path snapshotBase) {
+        CountingConnector notion = new CountingConnector(new DemoNotionConnector());
+        FederatedQueryService service =
+                newServiceWithConnectors(snapshotBase, RateLimitPolicy.UNLIMITED,
+                        Map.of("google", new DemoGoogleDriveConnector(), "notion", notion));
+        String sql =
+                "SELECT title, updatedAt FROM notion WHERE updatedAt > '2020-01-01'"
+                        + " ORDER BY updatedAt DESC LIMIT 20";
+
+        JsonObject aliceRun = service.executeOrThrow(ctxFor("alice"), sql(sql));
+        int callsAfterAlice = notion.searchCount();
+        assertTrue(callsAfterAlice > 0, "alice (first run) must hit the provider");
+        assertFalse(serveModeCached(aliceRun, NOTION_DEMO_SOURCE),
+                "alice's first run is live, not cached");
+
+        JsonObject danRun = service.executeOrThrow(ctxFor("dan"), sql(sql));
+        int callsAfterDan = notion.searchCount();
+
+        // Dan has the same (tenant-1, hr) as alice. With DemoNotionConnector declaring
+        // TENANT_ROLE scope, the snapshot path is invariant under userId — dan reads alice's
+        // chunks.
+        assertEquals(callsAfterAlice, callsAfterDan,
+                "dan's run must be a cache HIT (no extra provider calls)");
+        assertTrue(serveModeCached(danRun, NOTION_DEMO_SOURCE),
+                "dan's Notion side must report serveMode=cached");
+        assertEquals(aliceRun.get("snapshotPath").getAsString(),
+                danRun.get("snapshotPath").getAsString(),
+                "alice and dan share the snapshot path (same tenant + role; TENANT_ROLE connector)");
+        // Sanity: response flag reflects the keying decision.
+        assertFalse(danRun.get("snapshotKeyedByUser").getAsBoolean(),
+                "with TENANT_ROLE connectors, snapshotKeyedByUser must be false");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -340,8 +384,9 @@ class ShowcaseTest {
 
         RequestContext ctx = aliceCtx();
         // Full pushdown on Google → exactly one provider call per query → one rate-limit tick.
-        // Pure pushdown also bypasses the snapshot cache (chunks aren't persisted when residuals
-        // are empty), so subsequent identical queries DO hit the page loop, not a cached chunk.
+        // Full pushdown IS cached (since the cache-uniformity change), so we pass maxStaleness=
+        // Duration.ZERO to force a fresh fetch every call — that's the natural client gesture
+        // for "I want fresh data" and it lets the rate limiter actually fire on each call.
         FederatedQueryRequest req =
                 new FederatedQueryRequest(
                         "SELECT title, updatedAt FROM google WHERE updatedAt > '2020-01-01'"

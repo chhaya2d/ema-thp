@@ -50,19 +50,29 @@ public record QueryCacheScope(String userId, String tenantId, String roleSlug, i
     }
 
     /**
-     * Single path segment for snapshot roots (tenant + role + user + schema version). Snapshot rows
-     * are stored <strong>after</strong> role tag filtering so different roles do not share cached row
-     * bytes.
+     * Single path segment for snapshot roots (tenant + role + user + schema version). Default
+     * keys by user — safe for OAuth-isolated connectors where each user's data is private.
+     * Snapshot rows are stored <strong>after</strong> role tag filtering so different roles do
+     * not share cached row bytes.
      */
     public String snapshotScopeDirectoryName() {
-        return "t_"
-                + safeSegment(tenantId)
-                + "_r_"
-                + safeSegment(roleSlug)
-                + "_u_"
-                + safeSegment(userId)
-                + "_ksv"
-                + keySchemaVersion;
+        return snapshotScopeDirectoryName(true);
+    }
+
+    /**
+     * When {@code keyByUser} is {@code false}, omits the user segment so two callers sharing
+     * the same {@code (tenant, role)} share the cache directory. Caller decides based on the
+     * active connectors' declared {@link org.emathp.connector.DataScope} — only safe to disable
+     * when every involved connector is non-user-scoped (mock / demo / shared-data sources).
+     */
+    public String snapshotScopeDirectoryName(boolean keyByUser) {
+        StringBuilder sb = new StringBuilder("t_").append(safeSegment(tenantId));
+        sb.append("_r_").append(safeSegment(roleSlug));
+        if (keyByUser) {
+            sb.append("_u_").append(safeSegment(userId));
+        }
+        sb.append("_ksv").append(keySchemaVersion);
+        return sb.toString();
     }
 
     private static String safeSegment(String s) {

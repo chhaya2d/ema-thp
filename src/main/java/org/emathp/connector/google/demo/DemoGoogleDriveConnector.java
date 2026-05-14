@@ -8,6 +8,7 @@ import java.util.Set;
 import org.emathp.auth.UserContext;
 import org.emathp.connector.CapabilitySet;
 import org.emathp.connector.Connector;
+import org.emathp.connector.DataScope;
 import org.emathp.config.DemoConnectorDefaults;
 import org.emathp.connector.google.api.GoogleDriveFile;
 import org.emathp.connector.google.api.GoogleSearchResponse;
@@ -48,6 +49,16 @@ public final class DemoGoogleDriveConnector implements Connector {
     @Override
     public Duration defaultFreshnessTtl() {
         return Duration.ofMinutes(10);
+    }
+
+    /**
+     * Demo fixture is shared across all users (no OAuth-isolated content) — model as a
+     * tenant/role-scoped source so two users with the same {@code (tenant, role)} share the cache.
+     * The real Google Drive connector keeps the default {@link DataScope#USER}.
+     */
+    @Override
+    public DataScope dataScope() {
+        return DataScope.TENANT_ROLE;
     }
 
     @Override

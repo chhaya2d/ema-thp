@@ -199,16 +199,17 @@ class WebQueryRunnerUiPagingTest {
 
         JsonObject p2 = runner.executeOrThrow(ctx, new FederatedQueryRequest(sqlWide(), null, "2", null, null));
         assertEquals("fresh", p2.get("freshnessDecision").getAsString());
-        assertFalse(
+        assertTrue(
                 googleDriveSide(p2).get("snapshotReuseNoProviderCall").getAsBoolean(),
-                "Pure pushdown leg has no residual → connector chunks not cached");
+                "Pure pushdown leg now caches too — page 2 must reuse the chunk");
         assertEquals(2, googleDriveSide(p2).getAsJsonObject("execution").getAsJsonArray("rows").size());
         assertNotEquals(firstGoogleDriveTitle(p1), firstGoogleDriveTitle(p2));
         assertNotion_sqlWide_residualSortAndSnapshots(p2, true, false);
         assertNotEquals(firstNotionTitle(p1), firstNotionTitle(p2));
 
         JsonObject pLast = runner.executeOrThrow(ctx, new FederatedQueryRequest(sqlWide(), null, "6", null, null));
-        assertFalse(googleDriveSide(pLast).get("snapshotReuseNoProviderCall").getAsBoolean());
+        assertTrue(googleDriveSide(pLast).get("snapshotReuseNoProviderCall").getAsBoolean(),
+                "Page 3 also reuses the materialized chunk");
         assertEquals(2, googleDriveSide(pLast).getAsJsonObject("execution").getAsJsonArray("rows").size());
         assertEquals(8, googleDriveSide(pLast).getAsJsonObject("execution").get("uiRowTotal").getAsInt());
         assertTrue(pLast.get("uiNextCursor").isJsonNull());

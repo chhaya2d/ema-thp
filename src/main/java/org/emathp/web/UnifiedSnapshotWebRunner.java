@@ -98,6 +98,21 @@ final class UnifiedSnapshotWebRunner {
         return runSingle(ctx, (Query) parsed, startRow, effectivePageSize, req.maxStaleness());
     }
 
+    /**
+     * True if any of the active connectors declares {@link
+     * org.emathp.connector.Connector#isUserScopedData()} — when so, the snapshot path must
+     * include userId. If every connector is non-user-scoped, the cache can be shared across
+     * users with the same {@code (tenant, role)}.
+     */
+    private static boolean anyUserScoped(List<Connector> active) {
+        for (Connector c : active) {
+            if (c.isUserScopedData()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private JsonObject runSingle(
             RequestContext ctx, Query rawQuery, int startRow, int effectivePageSize, Duration maxStaleness)
             throws IOException {
@@ -105,10 +120,19 @@ final class UnifiedSnapshotWebRunner {
         QueryCacheScope scope = ctx.scope();
         TagAccessPolicy tagPolicy = tagPolicyFor(scope);
 
+        // Resolve active connectors first — their dataScope() determines whether the snapshot
+        // path keys by user. If any side is user-scoped (real OAuth), the whole query tree is
+        // keyed by user; if all sides are tenant/role-scoped (demo / shared-data sources), the
+        // tree is shared across users with the same (tenant, role).
+        List<Connector> activeConnectors =
+                SingleSourceConnectorSelector.connectorsForSingleSource(
+                        rawQuery.fromTable(), connectors, connectorsByName);
+        boolean keyByUser = anyUserScoped(activeConnectors);
+        String scopeDirName = scope.snapshotScopeDirectoryName(keyByUser);
+
         String normalized = ParsedQueryNormalizer.canonicalSnapshotIdentity(rawQuery);
         String queryHash = QuerySnapshotHasher.hashForPath(normalized);
-        Path queryRoot =
-                snapshotQueryService.queryRoot(snapshotEnv, scope.snapshotScopeDirectoryName(), queryHash);
+        Path queryRoot = snapshotQueryService.queryRoot(snapshotEnv, scopeDirName, queryHash);
 
         Instant now = Instant.now();
         boolean staleRestarted =
@@ -117,7 +141,7 @@ final class UnifiedSnapshotWebRunner {
             Metrics.SNAPSHOT_STALE_RESTARTS.inc();
         }
         snapshotQueryService.ensureQueryInfo(
-                queryRoot, queryHash, scope.snapshotScopeDirectoryName(), normalized, now.toString());
+                queryRoot, queryHash, scopeDirName, normalized, now.toString());
 
         String freshnessDecision = staleRestarted ? "stale_restarted" : "fresh";
 
@@ -141,10 +165,7 @@ final class UnifiedSnapshotWebRunner {
 
         root.addProperty("tenantId", scope.tenantId());
         root.addProperty("roleSlug", scope.roleSlug());
-
-        List<Connector> activeConnectors =
-                SingleSourceConnectorSelector.connectorsForSingleSource(
-                        rawQuery.fromTable(), connectors, connectorsByName);
+        root.addProperty("snapshotKeyedByUser", keyByUser);
 
         JsonArray targets = new JsonArray();
         for (Connector c : activeConnectors) {
@@ -201,10 +222,16 @@ final class UnifiedSnapshotWebRunner {
         QueryCacheScope scope = ctx.scope();
         TagAccessPolicy tagPolicy = tagPolicyFor(scope);
         boolean snap = snapshotQueryService.persistSnapshotMaterialization();
+        // Either side user-scoped → whole join keyed by user; otherwise shared.
+        Connector leftConn = connectorsByName.get(jq.left().connectorName());
+        Connector rightConn = connectorsByName.get(jq.right().connectorName());
+        boolean keyByUser =
+                (leftConn != null && leftConn.isUserScopedData())
+                        || (rightConn != null && rightConn.isUserScopedData());
+        String scopeDirName = scope.snapshotScopeDirectoryName(keyByUser);
         String normalized = ParsedQueryNormalizer.canonicalSnapshotIdentity(jq);
         String queryHash = QuerySnapshotHasher.hashForPath(normalized);
-        Path queryRoot =
-                snapshotQueryService.queryRoot(snapshotEnv, scope.snapshotScopeDirectoryName(), queryHash);
+        Path queryRoot = snapshotQueryService.queryRoot(snapshotEnv, scopeDirName, queryHash);
 
         Instant now = snapshotQueryService.clock().now();
         boolean staleRestarted =
@@ -213,7 +240,7 @@ final class UnifiedSnapshotWebRunner {
             Metrics.SNAPSHOT_STALE_RESTARTS.inc();
         }
         snapshotQueryService.ensureQueryInfo(
-                queryRoot, queryHash, scope.snapshotScopeDirectoryName(), normalized, now.toString());
+                queryRoot, queryHash, scopeDirName, normalized, now.toString());
 
         FullMaterializationCoordinator.Outcome out =
                 FullMaterializationCoordinator.run(
@@ -237,6 +264,7 @@ final class UnifiedSnapshotWebRunner {
         root.addProperty("snapshotPath", queryRoot.toString());
         root.addProperty("tenantId", scope.tenantId());
         root.addProperty("roleSlug", scope.roleSlug());
+        root.addProperty("snapshotKeyedByUser", keyByUser);
         root.addProperty("freshnessDecision", staleRestarted ? "stale_restarted" : "fresh");
         root.addProperty("snapshotEnvironment", snapshotEnv.name());
         root.addProperty("snapshotBacked", snap);

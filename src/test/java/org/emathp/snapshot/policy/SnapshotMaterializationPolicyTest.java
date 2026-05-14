@@ -21,8 +21,12 @@ import org.junit.jupiter.api.Test;
 class SnapshotMaterializationPolicyTest {
 
     @Test
-    void standaloneLeg_persistsChunksOnlyWhenResidual() {
-        ResidualOps withOrderBy = new ResidualOps(null, List.of(new OrderBy("updatedAt", Direction.DESC)));
+    void standaloneLeg_persistsChunks_forBothResidualAndPushdown_whenPersistenceEnabled() {
+        // After the cache-uniformity change, the residual-vs-pushdown distinction no longer
+        // gates per-side persistence — both shapes cache. Saving a provider round-trip is worth
+        // it regardless of whether the engine did residual work locally.
+        ResidualOps withOrderBy =
+                new ResidualOps(null, List.of(new OrderBy("updatedAt", Direction.DESC)));
         PushdownPlan withRes =
                 new PushdownPlan(
                         new ConnectorQuery(List.of(), null, List.of(), null, null),
@@ -38,7 +42,7 @@ class SnapshotMaterializationPolicyTest {
                         true);
 
         assertTrue(SnapshotMaterializationPolicy.persistConnectorSideChunks(withRes));
-        assertFalse(SnapshotMaterializationPolicy.persistConnectorSideChunks(noRes));
+        assertTrue(SnapshotMaterializationPolicy.persistConnectorSideChunks(noRes));
     }
 
     @Test
