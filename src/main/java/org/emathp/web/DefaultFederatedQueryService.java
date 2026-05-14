@@ -11,6 +11,7 @@ import org.emathp.cache.QueryCacheScope;
 import org.emathp.connector.Connector;
 import org.emathp.engine.JoinExecutor;
 import org.emathp.engine.QueryExecutor;
+import org.emathp.metrics.Metrics;
 import org.emathp.model.ParsedQuery;
 import org.emathp.parser.SQLParserService;
 import org.emathp.planner.Planner;
@@ -74,6 +75,9 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
             body.addProperty("traceId", ctx.traceId());
             body.addProperty("rate_limit_status", "OK");
             Long freshnessMs = extractFreshnessMs(body);
+            if (freshnessMs != null) {
+                Metrics.RESPONSE_FRESHNESS.observe(freshnessMs.doubleValue());
+            }
             return new ResponseContext(
                     ctx.traceId(),
                     elapsedMs,
@@ -83,6 +87,7 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
         } catch (RateLimitedException e) {
             long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
             String scope = e.violatedScope() != null ? e.violatedScope().name() : null;
+            Metrics.QUERY_ERRORS.inc(ErrorCode.RATE_LIMIT_EXHAUSTED.name());
             return new ResponseContext(
                     ctx.traceId(),
                     elapsedMs,
@@ -94,6 +99,7 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
             long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
             String rls =
                     e.code() == ErrorCode.RATE_LIMIT_EXHAUSTED ? "EXHAUSTED" : "OK";
+            Metrics.QUERY_ERRORS.inc(e.code().name());
             return new ResponseContext(
                     ctx.traceId(),
                     elapsedMs,
@@ -103,6 +109,7 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
                             e.code(), e.getMessage(), e.retryAfterMs(), e.violatedScope()));
         } catch (IllegalArgumentException e) {
             long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
+            Metrics.QUERY_ERRORS.inc(ErrorCode.BAD_QUERY.name());
             return new ResponseContext(
                     ctx.traceId(),
                     elapsedMs,
@@ -113,6 +120,7 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
         } catch (IOException | RuntimeException e) {
             long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
             String message = Objects.toString(e.getMessage(), e.getClass().getSimpleName());
+            Metrics.QUERY_ERRORS.inc(ErrorCode.INTERNAL.name());
             return new ResponseContext(
                     ctx.traceId(),
                     elapsedMs,

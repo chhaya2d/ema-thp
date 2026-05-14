@@ -2,11 +2,12 @@ package org.emathp.planner;
 
 import java.util.ArrayList;
 import java.util.List;
+import org.emathp.config.WebDefaults;
 import org.emathp.connector.CapabilitySet;
 import org.emathp.connector.Connector;
+import org.emathp.metrics.Metrics;
 import org.emathp.model.ComparisonExpr;
 import org.emathp.model.ConnectorQuery;
-import org.emathp.config.WebDefaults;
 import org.emathp.model.OrderBy;
 import org.emathp.model.Query;
 import org.emathp.model.ResidualOps;
@@ -83,8 +84,10 @@ public final class Planner {
             boolean fieldOk = caps.supportedFields().contains(w.field());
             if (caps.supportsFiltering() && operatorOk && fieldOk) {
                 pushedWhere = w;
+                Metrics.PLANNER_PUSHED.inc(connector.source(), "WHERE");
             } else {
                 pending.add("WHERE");
+                Metrics.PLANNER_RESIDUAL.inc(connector.source(), "WHERE");
             }
         }
         boolean whereOk = query.where() == null || pushedWhere != null;
@@ -95,8 +98,10 @@ public final class Planner {
             if (caps.supportsSorting() && whereOk) {
                 pushedOrderBy = query.orderBy();
                 orderByPushed = true;
+                Metrics.PLANNER_PUSHED.inc(connector.source(), "ORDER_BY");
             } else {
                 pending.add("ORDER BY");
+                Metrics.PLANNER_RESIDUAL.inc(connector.source(), "ORDER_BY");
             }
         }
         boolean orderByOk = query.orderBy().isEmpty() || orderByPushed;
@@ -105,8 +110,10 @@ public final class Planner {
         if (!query.select().isEmpty()) {
             if (caps.supportsProjection()) {
                 pushedProjection = query.select();
+                Metrics.PLANNER_PUSHED.inc(connector.source(), "PROJECTION");
             } else {
                 pending.add("PROJECTION");
+                Metrics.PLANNER_RESIDUAL.inc(connector.source(), "PROJECTION");
             }
         }
 
@@ -119,8 +126,10 @@ public final class Planner {
                 // UI query pageSize only enables pagination; connector batch size comes from the
                 // connector (see Connector#defaultFetchPageSize).
                 pushedPageSize = connector.defaultFetchPageSize();
+                Metrics.PLANNER_PUSHED.inc(connector.source(), "PAGINATION");
             } else {
                 pending.add("PAGINATION");
+                Metrics.PLANNER_RESIDUAL.inc(connector.source(), "PAGINATION");
             }
         }
 

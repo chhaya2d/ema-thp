@@ -565,6 +565,7 @@ public final class DemoWebServer {
                         0);
         http.createContext("/", exchange -> handleRoot(exchange, env, liveConfigured));
         http.createContext("/health", exchange -> sendBytes(exchange, 200, "text/plain", "ok"));
+        http.createContext("/metrics", DemoWebServer::handleMetrics);
         if (live != null) {
             http.createContext("/oauth/google/start", exchange -> handleOAuthStart(exchange, live.oauth()));
             http.createContext(
@@ -928,6 +929,22 @@ public final class DemoWebServer {
             ErrorResponder.writeFailure(
                     ex, json, traceId, (ResponseContext.Outcome.Failure) rc.outcome());
         }
+    }
+
+    /**
+     * Prometheus text-exposition endpoint. Returns the full counter/histogram registry; no
+     * authentication. Scrape with: {@code curl -s http://localhost:8080/metrics}.
+     */
+    private static void handleMetrics(HttpExchange ex) throws IOException {
+        if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
+            sendBytes(ex, 405, "text/plain", "GET only");
+            return;
+        }
+        byte[] body = org.emathp.metrics.Metrics.exposition().getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+        ex.sendResponseHeaders(200, body.length);
+        ex.getResponseBody().write(body);
+        ex.close();
     }
 
     private static boolean missingGoogleAccount(GoogleTokenStore store, String userId) {

@@ -10,6 +10,7 @@ import org.emathp.model.ConnectorQuery;
 import org.emathp.model.EngineRow;
 import org.emathp.model.ResidualOps;
 import org.emathp.model.SearchResult;
+import org.emathp.metrics.Metrics;
 import org.emathp.query.RequestContext;
 import org.emathp.ratelimit.RateLimitPolicy;
 import org.emathp.ratelimit.RateLimitResult;
@@ -688,7 +689,7 @@ public final class QueryExecutor {
         }
 
         if (tagPolicy != null && !tagPolicy.allowedTags().isEmpty()) {
-            rows = TagRowFilter.apply(rows, tagPolicy);
+            rows = TagRowFilter.apply(rows, tagPolicy, ctx.scope().roleSlug());
         }
 
         boolean limitStoppedAtCap = false;
@@ -724,10 +725,23 @@ public final class QueryExecutor {
                                 new org.emathp.ratelimit.RequestContext(
                                         ctx.tenantId(), user.userId(), connector.source()));
                 if (!r.allowed()) {
+                    String scope = r.violatedScope() != null ? r.violatedScope().name() : "UNKNOWN";
+                    Metrics.RATE_LIMIT_DENIED.inc(scope);
                     throw new RateLimitedException(r);
                 }
             }
-            SearchResult<EngineRow> page = connector.search(user, current);
+            long callStart = System.nanoTime();
+            SearchResult<EngineRow> page;
+            try {
+                page = connector.search(user, current);
+                Metrics.PROVIDER_CALLS.inc(connector.source(), "ok");
+            } catch (RuntimeException ex) {
+                Metrics.PROVIDER_CALLS.inc(connector.source(), "error");
+                throw ex;
+            } finally {
+                double sec = (System.nanoTime() - callStart) / 1_000_000_000.0;
+                Metrics.PROVIDER_CALL_DURATION.observe(sec, connector.source());
+            }
             calls.add(new PageCall(current.cursor(), page.rows().size(), page.nextCursor()));
 
             for (EngineRow r : page.rows()) {

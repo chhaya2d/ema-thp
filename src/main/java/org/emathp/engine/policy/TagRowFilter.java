@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import org.emathp.authz.TagAccessPolicy;
+import org.emathp.metrics.Metrics;
 import org.emathp.model.EngineRow;
 
 /** Applies {@link TagAccessPolicy} to rows before logical LIMIT. */
@@ -16,11 +17,20 @@ public final class TagRowFilter {
 
     private TagRowFilter() {}
 
+    /** Back-compat: no role label on the drops counter. */
+    public static List<EngineRow> apply(List<EngineRow> rows, TagAccessPolicy policy) {
+        return apply(rows, policy, "_");
+    }
+
     /**
      * Rows missing {@value #TAG_FIELD} or carrying an empty tag list always pass (permissive).
      * Otherwise at least one normalized tag must appear in {@link TagAccessPolicy#allowedTags()}.
+     *
+     * <p>{@code roleSlug} is observable only via the {@code rows_filtered_by_tag_policy_total}
+     * counter — it is not used for the filter decision itself (the policy already encodes the
+     * effective allowed-tag set for the active role).
      */
-    public static List<EngineRow> apply(List<EngineRow> rows, TagAccessPolicy policy) {
+    public static List<EngineRow> apply(List<EngineRow> rows, TagAccessPolicy policy, String roleSlug) {
         if (policy == null || policy.allowedTags().isEmpty()) {
             return rows;
         }
@@ -29,6 +39,10 @@ public final class TagRowFilter {
             if (passes(row, policy)) {
                 out.add(row);
             }
+        }
+        int dropped = rows.size() - out.size();
+        if (dropped > 0) {
+            Metrics.TAG_FILTER_DROPS.inc(dropped, roleSlug == null || roleSlug.isBlank() ? "_" : roleSlug);
         }
         return out;
     }

@@ -24,6 +24,7 @@ import org.emathp.connector.Connector;
 import org.emathp.engine.JoinExecutor;
 import org.emathp.engine.QueryExecutor;
 import org.emathp.federation.MaterializedPage;
+import org.emathp.metrics.Metrics;
 import org.emathp.model.ComparisonExpr;
 import org.emathp.model.ConnectorQuery;
 import org.emathp.model.EngineRow;
@@ -112,6 +113,9 @@ final class UnifiedSnapshotWebRunner {
         Instant now = Instant.now();
         boolean staleRestarted =
                 snapshotQueryService.pruneStaleQueryTreeIfNeeded(queryRoot, maxStaleness);
+        if (staleRestarted) {
+            Metrics.SNAPSHOT_STALE_RESTARTS.inc();
+        }
         snapshotQueryService.ensureQueryInfo(
                 queryRoot, queryHash, scope.snapshotScopeDirectoryName(), normalized, now.toString());
 
@@ -205,6 +209,9 @@ final class UnifiedSnapshotWebRunner {
         Instant now = snapshotQueryService.clock().now();
         boolean staleRestarted =
                 snapshotQueryService.pruneStaleQueryTreeIfNeeded(queryRoot, maxStaleness);
+        if (staleRestarted) {
+            Metrics.SNAPSHOT_STALE_RESTARTS.inc();
+        }
         snapshotQueryService.ensureQueryInfo(
                 queryRoot, queryHash, scope.snapshotScopeDirectoryName(), normalized, now.toString());
 

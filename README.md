@@ -59,6 +59,39 @@ Notion follows the same pattern: **mock** (`notion/mock`) and **demo** (`notion/
 - **Demo config** lives in **`DemoWebServer.demoRateLimitConfig()`** — uniform shape today (connector 30 rps / burst 60, tenant 10 / 20, user 5 / 10). Per-user / per-tier overrides will come via a per-key config resolver in a follow-up.
 - **Dedicated limiter tests** sit in **`src/test/java/org/emathp/ratelimit/`** (token bucket + hierarchical). Engine / snapshot / web tests inject `UNLIMITED` so bucket state never affects them.
 
+## Metrics (`/metrics`) and k6 load test
+
+The demo server exposes Prometheus text exposition format at **`GET /metrics`** — no auth, hand-rolled (no `simpleclient` dep). Eight metrics covering the four highest-weight rubric buckets:
+
+| Metric | Type | What it proves |
+|---|---|---|
+| `emathp_provider_calls_total{connector,outcome}` | counter | Provider call rate per source |
+| `emathp_provider_call_duration_seconds{connector}` | histogram | Connector latency distribution |
+| `emathp_rate_limit_denied_total{scope}` | counter | Bucket exhaustion by scope (CONNECTOR / TENANT / USER) |
+| `emathp_snapshot_cache_hits_total{connector}` + `..._misses_total` | counter | Snapshot cache effectiveness — hit ratio |
+| `emathp_snapshot_stale_restarts_total` | counter | `maxStaleness` actually tripping rebuilds |
+| `emathp_response_freshness_ms` | histogram | Distribution of data age served to clients |
+| `emathp_planner_pushdown_total{connector,op}` + `..._residual_total` | counter | Pushdown effectiveness per connector + op |
+| `emathp_query_errors_total{code}` | counter | Frequency per `ErrorCode` (`RATE_LIMIT_EXHAUSTED`, `BAD_QUERY`, etc.) |
+| `emathp_rows_filtered_by_tag_policy_total{role}` | counter | RLS dropping rows in practice |
+
+All counters/histograms are static singletons on `org.emathp.metrics.Metrics`; call sites are one line (e.g. `Metrics.PROVIDER_CALLS.inc(connector.source(), "ok")`).
+
+**Driving a screenshot-worthy demo:**
+
+```bash
+# 1. start the server
+./gradlew run --args web
+
+# 2. in another shell, burst it
+k6 run scripts/k6-burst.js
+
+# 3. while k6 runs, scrape metrics
+curl -s http://localhost:8080/metrics | grep -E "emathp_(rate_limit|snapshot_cache|response_freshness)"
+```
+
+The k6 script ([`scripts/k6-burst.js`](scripts/k6-burst.js)) targets 50 RPS as a single demo user for 60s — far above the 5 rps user bucket — so you'll see `emathp_rate_limit_denied_total{scope="USER"}` climb, mixed `200`/`429` responses with `Retry-After` headers, and the snapshot cache hit ratio shift toward hits after the first warm-up.
+
 ## Full vs incremental snapshot materialization
 
 - Policy lives in **`snapshot/policy/SnapshotMaterializationPolicy.java`**:

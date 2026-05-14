@@ -74,7 +74,7 @@ public final class FullMaterializationCoordinator {
         }
 
         List<EngineRow> combined = joinExecutor.materialize(ctx, connectorsByName, jq);
-        combined = applyTagPolicy(combined, tagPolicy);
+        combined = applyTagPolicy(combined, tagPolicy, ctx.scope().roleSlug());
         MaterializedRowSet rowSet = MaterializedRowSet.limitedFrom(combined, jq.limit());
         MaterializedPage paged = OffsetCursorPager.page(rowSet, jq.cursor(), jq.pageSize());
 
@@ -107,16 +107,17 @@ public final class FullMaterializationCoordinator {
             JoinQuery jq,
             TagAccessPolicy tagPolicy) {
         List<EngineRow> combined = joinExecutor.materialize(ctx, connectorsByName, jq);
-        combined = applyTagPolicy(combined, tagPolicy);
+        combined = applyTagPolicy(combined, tagPolicy, ctx.scope().roleSlug());
         MaterializedRowSet rowSet = MaterializedRowSet.limitedFrom(combined, jq.limit());
         return OffsetCursorPager.page(rowSet, jq.cursor(), jq.pageSize());
     }
 
-    private static List<EngineRow> applyTagPolicy(List<EngineRow> rows, TagAccessPolicy tagPolicy) {
+    private static List<EngineRow> applyTagPolicy(
+            List<EngineRow> rows, TagAccessPolicy tagPolicy, String roleSlug) {
         if (tagPolicy == null || tagPolicy.allowedTags().isEmpty()) {
             return rows;
         }
-        return TagRowFilter.apply(rows, tagPolicy);
+        return TagRowFilter.apply(rows, tagPolicy, roleSlug);
     }
 
     /**

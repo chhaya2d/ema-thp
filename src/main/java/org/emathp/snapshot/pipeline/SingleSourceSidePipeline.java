@@ -11,6 +11,7 @@ import java.util.Optional;
 import org.emathp.authz.TagAccessPolicy;
 import org.emathp.connector.Connector;
 import org.emathp.engine.QueryExecutor;
+import org.emathp.metrics.Metrics;
 import org.emathp.model.EngineRow;
 import org.emathp.model.Query;
 import org.emathp.planner.Planner;
@@ -60,6 +61,7 @@ public final class SingleSourceSidePipeline {
         if (persistThisSide) {
             Optional<ChunkMetadata> latest = store.latestChunkMeta(connectorDir);
             if (latest.isPresent() && FreshnessPolicy.isFresh(latest.get(), maxStaleness, now)) {
+                Metrics.SNAPSHOT_CACHE_HITS.inc(connector.source());
                 List<EngineRow> rows = loadAllRowsFromChunks(store, connectorDir);
                 Integer lim = plannerQuery.limit();
                 if (lim != null && rows.size() > lim) {
@@ -84,6 +86,7 @@ public final class SingleSourceSidePipeline {
                         m,
                         connectorDir);
             }
+            Metrics.SNAPSHOT_CACHE_MISSES.inc(connector.source());
         }
 
         TagAccessPolicy tagPolicy =
