@@ -264,8 +264,8 @@ public final class DemoWebServer {
             ${DEMO_QUERY_PRESETS}
             <p><label>UI page size <input type="number" id="pageSize" min="1" max="${MAX_UI_PS}" value="${DEFAULT_UI_PS}"></label>
             <span style="color:#666">(defaults: demo <code>${DEMO_UI_PS}</code>, live <code>${LIVE_UI_PS}</code>)</span></p>
-            <p><label>Max staleness <input type="text" id="maxStalenessInp" placeholder="e.g. PT10M" size="16"></label>
-            <span style="color:#666">ISO-8601 duration; leave empty for default chunk TTL.</span></p>
+            <p><label>Max staleness <input type="text" id="maxStalenessInp" placeholder="e.g. 5m or 30s" size="16"></label>
+            <span style="color:#666">Accepts <code>5m</code>, <code>30s</code>, <code>1h</code>, <code>500ms</code>, or ISO <code>PT5M</code>. Empty = connector default TTL.</span></p>
             <p><button type="button" id="runBtn">Run</button></p>
             <p><span id="pageInfo"></span>
               <button type="button" id="prevBtn" disabled>Prev</button>
@@ -288,6 +288,14 @@ public final class DemoWebServer {
               let lastPrev = null;
               function escHtml(s) {
                 return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+              }
+              function formatMs(ms) {
+                if (ms == null) return '—';
+                var n = Number(ms);
+                if (n < 1000) return n + ' ms';
+                if (n < 60000) return (n / 1000).toFixed(n < 10000 ? 1 : 0) + ' s';
+                if (n < 3600000) return Math.round(n / 60000) + ' min ' + Math.round((n % 60000) / 1000) + ' s';
+                return Math.round(n / 3600000) + ' h ' + Math.round((n % 3600000) / 60000) + ' min';
               }
               function rowFields(row) {
                 var f = row.fields || {};
@@ -359,7 +367,24 @@ public final class DemoWebServer {
                 }
                 var h = '';
                 if (j.serverElapsedMs != null) {
-                  h += '<p><strong>Server time:</strong> ' + escHtml(String(j.serverElapsedMs)) + ' ms</p>';
+                  h += '<p><strong>Server time:</strong> ' + escHtml(String(j.serverElapsedMs)) + ' ms';
+                  if (j.traceId) {
+                    h += ' · <strong>traceId:</strong> <code>' + escHtml(j.traceId) + '</code>';
+                  }
+                  h += '</p>';
+                }
+                if (j.freshness_ms != null || j.rate_limit_status) {
+                  h += '<p>';
+                  if (j.freshness_ms != null) {
+                    h += '<strong>Data age:</strong> ' + formatMs(j.freshness_ms);
+                  }
+                  if (j.rate_limit_status) {
+                    if (j.freshness_ms != null) h += ' · ';
+                    var rls = j.rate_limit_status;
+                    var color = rls === 'EXHAUSTED' ? '#b00' : '#0a0';
+                    h += '<strong>Rate limit:</strong> <span style="color:' + color + '">' + escHtml(rls) + '</span>';
+                  }
+                  h += '</p>';
                 }
                 if (j.tenantId || j.roleSlug) {
                   h += '<p><strong>Tenant / role (resolved):</strong> <code>' + escHtml(String(j.tenantId||'')) + '</code> · <code>' + escHtml(String(j.roleSlug||'')) + '</code></p>';
