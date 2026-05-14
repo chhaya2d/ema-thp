@@ -28,7 +28,15 @@ public final class FullMaterializedResultSnapshot {
         return queryRoot.resolve(SnapshotPaths.MATERIALIZED_QUERY_SEGMENT);
     }
 
-    public record CacheHit(List<EngineRow> cappedRows, int upstreamRowCount, boolean stoppedAtLimit) {}
+    /**
+     * @param createdAt ISO-8601 timestamp from the chunk metadata when this materialization was
+     *                  first written — callers compute {@code freshness_ms = now - createdAt}.
+     */
+    public record CacheHit(
+            List<EngineRow> cappedRows,
+            int upstreamRowCount,
+            boolean stoppedAtLimit,
+            String createdAt) {}
 
     public static Optional<CacheHit> tryHit(
             Path queryRoot, Duration maxStaleness, SnapshotStore store, Clock clock) throws IOException {
@@ -57,7 +65,7 @@ public final class FullMaterializedResultSnapshot {
         ChunkMetadata m = meta.get();
         String prefix = ChunkNaming.prefix(m.startRow(), m.endRow());
         List<EngineRow> rows = store.readMaterializedRows(dir, prefix);
-        return Optional.of(new CacheHit(rows, upstreamRowCount, stoppedAtLimit));
+        return Optional.of(new CacheHit(rows, upstreamRowCount, stoppedAtLimit, m.createdAt()));
     }
 
     public static void writeIfNonEmpty(

@@ -56,6 +56,11 @@ final class ErrorResponder {
         o.addProperty("code", failure.code().name());
         o.addProperty("message", failure.message());
         o.addProperty("traceId", traceId);
+        o.addProperty(
+                "rate_limit_status",
+                failure.code() == org.emathp.query.ErrorCode.RATE_LIMIT_EXHAUSTED
+                        ? "EXHAUSTED"
+                        : "OK");
         if (failure.retryAfterMs() != null) {
             o.addProperty("retryAfterMs", failure.retryAfterMs());
         }

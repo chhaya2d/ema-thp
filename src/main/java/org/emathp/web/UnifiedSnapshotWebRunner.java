@@ -154,11 +154,36 @@ final class UnifiedSnapshotWebRunner {
         }
         root.add("sides", sides);
         root.addProperty("providerFetchSummary", summarizeSidesFetchMode(sides));
+        attachFreshnessMs(root, sides, now);
 
         enrichSingleSourceResumeCursors(root);
         attachSnapshotAudit(root, now);
         UiResponsePaging.applyToSingleConnectorSides(root, startRow, effectivePageSize);
         return root;
+    }
+
+    /**
+     * Aggregates per-side {@code freshnessMs} (already attached by {@link #executeSideSnapshot})
+     * into a root-level {@code freshness_ms} = age of the oldest used chunk across sides. Null
+     * when no side carried a chunk (e.g., zero-row result).
+     */
+    private static void attachFreshnessMs(JsonObject root, JsonArray sides, Instant now) {
+        Long oldest = null;
+        for (JsonElement el : sides) {
+            JsonObject side = el.getAsJsonObject();
+            if (!side.has("freshnessMs") || side.get("freshnessMs").isJsonNull()) {
+                continue;
+            }
+            long ms = side.get("freshnessMs").getAsLong();
+            if (oldest == null || ms > oldest) {
+                oldest = ms;
+            }
+        }
+        if (oldest != null) {
+            root.addProperty("freshness_ms", oldest);
+        } else {
+            root.add("freshness_ms", JsonNull.INSTANCE);
+        }
     }
 
     private JsonObject renderFullMaterializationResponse(
@@ -209,6 +234,7 @@ final class UnifiedSnapshotWebRunner {
         root.addProperty("snapshotEnvironment", snapshotEnv.name());
         root.addProperty("snapshotBacked", snap);
         root.addProperty(QueryResponseJsonKeys.FULL_MATERIALIZATION_REUSE, out.reusedFromDisk());
+        root.addProperty("freshness_ms", out.freshnessMs());
         if (maxStaleness != null) {
             root.addProperty("maxStaleness", maxStaleness.toString());
         } else {
@@ -311,13 +337,22 @@ final class UnifiedSnapshotWebRunner {
             JsonObject meta = new JsonObject();
             meta.addProperty("startRow", out.authoritativeChunkMeta().startRow());
             meta.addProperty("endRow", out.authoritativeChunkMeta().endRow());
+            meta.addProperty("createdAt", out.authoritativeChunkMeta().createdAt());
             meta.addProperty("freshnessUntil", out.authoritativeChunkMeta().freshnessUntil());
             meta.addProperty("nextCursor", out.authoritativeChunkMeta().nextCursor());
             meta.addProperty("exhausted", out.authoritativeChunkMeta().exhausted());
             meta.addProperty("providerFetchSize", out.authoritativeChunkMeta().providerFetchSize());
             o.add("authoritativeChunkMeta", meta);
+            long ageMs =
+                    Math.max(
+                            0L,
+                            Instant.now().toEpochMilli()
+                                    - Instant.parse(out.authoritativeChunkMeta().createdAt())
+                                            .toEpochMilli());
+            o.addProperty("freshnessMs", ageMs);
         } else {
             o.add("authoritativeChunkMeta", JsonNull.INSTANCE);
+            o.add("freshnessMs", JsonNull.INSTANCE);
         }
 
         return o;

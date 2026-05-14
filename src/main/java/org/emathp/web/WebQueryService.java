@@ -32,9 +32,13 @@ public final class WebQueryService {
         try {
             return resolve(connectorMode).execute(ctx, request);
         } catch (ApiException e) {
+            String rls =
+                    e.code() == org.emathp.query.ErrorCode.RATE_LIMIT_EXHAUSTED ? "EXHAUSTED" : "OK";
             return new ResponseContext(
                     ctx.traceId(),
                     0L,
+                    null,
+                    rls,
                     new ResponseContext.Outcome.Failure(
                             e.code(), e.getMessage(), e.retryAfterMs(), e.violatedScope()));
         }

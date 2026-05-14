@@ -32,7 +32,12 @@ public final class FullMaterializationCoordinator {
 
     private FullMaterializationCoordinator() {}
 
-    public record Outcome(MaterializedPage paged, boolean reusedFromDisk) {}
+    /**
+     * @param freshnessMs age of the materialized result in milliseconds (now − chunk.createdAt).
+     *                   {@code 0L} when a fresh materialization just ran; positive when served
+     *                   from disk cache.
+     */
+    public record Outcome(MaterializedPage paged, boolean reusedFromDisk, long freshnessMs) {}
 
     public static Outcome run(
             RequestContext ctx,
@@ -49,7 +54,7 @@ public final class FullMaterializationCoordinator {
 
         if (!persistenceEnabled) {
             return new Outcome(
-                    materializeAndPage(ctx, joinExecutor, connectorsByName, jq, tagPolicy), false);
+                    materializeAndPage(ctx, joinExecutor, connectorsByName, jq, tagPolicy), false, 0L);
         }
 
         Instant now = clock.now();
@@ -64,7 +69,8 @@ public final class FullMaterializationCoordinator {
                             h.stoppedAtLimit(),
                             jq.cursor(),
                             jq.pageSize());
-            return new Outcome(paged, true);
+            long ageMs = Math.max(0L, now.toEpochMilli() - Instant.parse(h.createdAt()).toEpochMilli());
+            return new Outcome(paged, true, ageMs);
         }
 
         List<EngineRow> combined = joinExecutor.materialize(ctx, connectorsByName, jq);
@@ -91,7 +97,7 @@ public final class FullMaterializationCoordinator {
         FullMaterializedResultSnapshot.writeIfNonEmpty(
                 queryRoot, store, rowSet.limitedRows(), meta, manifest);
 
-        return new Outcome(paged, false);
+        return new Outcome(paged, false, 0L);
     }
 
     private static MaterializedPage materializeAndPage(

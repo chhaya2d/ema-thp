@@ -72,21 +72,33 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
             long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
             body.addProperty("serverElapsedMs", elapsedMs);
             body.addProperty("traceId", ctx.traceId());
+            body.addProperty("rate_limit_status", "OK");
+            Long freshnessMs = extractFreshnessMs(body);
             return new ResponseContext(
-                    ctx.traceId(), elapsedMs, new ResponseContext.Outcome.Success(body));
+                    ctx.traceId(),
+                    elapsedMs,
+                    freshnessMs,
+                    "OK",
+                    new ResponseContext.Outcome.Success(body));
         } catch (RateLimitedException e) {
             long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
             String scope = e.violatedScope() != null ? e.violatedScope().name() : null;
             return new ResponseContext(
                     ctx.traceId(),
                     elapsedMs,
+                    null,
+                    "EXHAUSTED",
                     new ResponseContext.Outcome.Failure(
                             ErrorCode.RATE_LIMIT_EXHAUSTED, e.getMessage(), e.retryAfterMs(), scope));
         } catch (ApiException e) {
             long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
+            String rls =
+                    e.code() == ErrorCode.RATE_LIMIT_EXHAUSTED ? "EXHAUSTED" : "OK";
             return new ResponseContext(
                     ctx.traceId(),
                     elapsedMs,
+                    null,
+                    rls,
                     new ResponseContext.Outcome.Failure(
                             e.code(), e.getMessage(), e.retryAfterMs(), e.violatedScope()));
         } catch (IllegalArgumentException e) {
@@ -94,6 +106,8 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
             return new ResponseContext(
                     ctx.traceId(),
                     elapsedMs,
+                    null,
+                    "OK",
                     new ResponseContext.Outcome.Failure(
                             ErrorCode.BAD_QUERY, e.getMessage(), null, null));
         } catch (IOException | RuntimeException e) {
@@ -102,8 +116,22 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
             return new ResponseContext(
                     ctx.traceId(),
                     elapsedMs,
+                    null,
+                    "OK",
                     new ResponseContext.Outcome.Failure(ErrorCode.INTERNAL, message, null, null));
         }
+    }
+
+    /**
+     * Reads {@code freshness_ms} out of the runner's JSON body — set by {@code
+     * UnifiedSnapshotWebRunner} as the age of the freshest used snapshot data. Returns {@code
+     * null} when absent or JSON-null (e.g., a zero-row response that touched no chunks).
+     */
+    private static Long extractFreshnessMs(JsonObject body) {
+        if (!body.has("freshness_ms") || body.get("freshness_ms").isJsonNull()) {
+            return null;
+        }
+        return body.get("freshness_ms").getAsLong();
     }
 
     @Override

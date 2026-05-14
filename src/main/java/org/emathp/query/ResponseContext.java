@@ -4,14 +4,28 @@ import com.google.gson.JsonObject;
 import java.util.Objects;
 
 /**
- * Service-level response envelope: outcome (success body or failure code), trace echo, and
- * server-side elapsed time. The HTTP layer maps {@link Outcome.Failure#code()} → status code and
- * {@link Outcome.Failure#retryAfterMs()} → {@code Retry-After} header.
+ * Service-level response envelope: outcome (success body or failure code), trace echo,
+ * server-side elapsed time, and data freshness. The HTTP layer maps {@link
+ * Outcome.Failure#code()} → status code and {@link Outcome.Failure#retryAfterMs()} → {@code
+ * Retry-After} header.
  *
  * <p>Exceptions never cross the service boundary — every failure path returns a {@link
  * Outcome.Failure}. Tests prefer the throwing convenience on {@link FederatedQueryService}.
+ *
+ * @param freshnessMs      age in ms of the freshest used snapshot data (now − oldest chunk
+ *                         createdAt). {@code null} on failures, on responses that touched no
+ *                         chunks (zero-row), or when the body does not carry the field.
+ * @param rateLimitStatus  {@code "OK"} on success and non-rate-limit failures; {@code
+ *                         "EXHAUSTED"} when the request was denied with {@link
+ *                         ErrorCode#RATE_LIMIT_EXHAUSTED}. Mirrors PDF's {@code
+ *                         rate_limit_status} response field.
  */
-public record ResponseContext(String traceId, long serverElapsedMs, Outcome outcome) {
+public record ResponseContext(
+        String traceId,
+        long serverElapsedMs,
+        Long freshnessMs,
+        String rateLimitStatus,
+        Outcome outcome) {
 
     public ResponseContext {
         Objects.requireNonNull(traceId, "traceId");
