@@ -97,7 +97,7 @@ public final class SingleSourceSidePipeline {
                         plannerQuery.limit(),
                         tagPolicy);
 
-        Duration ttl = maxStaleness != null ? maxStaleness : defaultWriteTtl;
+        Duration ttl = resolveTtl(maxStaleness, connector.defaultFreshnessTtl(), defaultWriteTtl);
         Instant freshnessUntil = now.plus(ttl);
 
         List<EngineRow> rows = er.rows();
@@ -170,5 +170,19 @@ public final class SingleSourceSidePipeline {
             all.addAll(store.readChunkData(connectorDir, prefix));
         }
         return all;
+    }
+
+    /**
+     * Resolution order: client {@code maxStaleness} wins; else the connector's own
+     * {@link org.emathp.connector.Connector#defaultFreshnessTtl()}; else the system-wide floor.
+     */
+    static Duration resolveTtl(Duration clientMaxStaleness, Duration connectorTtl, Duration floor) {
+        if (clientMaxStaleness != null) {
+            return clientMaxStaleness;
+        }
+        if (connectorTtl != null) {
+            return connectorTtl;
+        }
+        return floor;
     }
 }

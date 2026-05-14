@@ -78,7 +78,7 @@ public final class FullMaterializationCoordinator {
         MaterializedRowSet rowSet = MaterializedRowSet.limitedFrom(combined, jq.limit());
         MaterializedPage paged = OffsetCursorPager.page(rowSet, jq.cursor(), jq.pageSize());
 
-        Duration ttl = maxStaleness != null ? maxStaleness : WebDefaults.snapshotChunkFreshness();
+        Duration ttl = resolveJoinTtl(maxStaleness, jq, connectorsByName);
         Instant freshnessUntil = now.plus(ttl);
         int n = rowSet.limitedRows().size();
         int lastIdx = n == 0 ? -1 : n - 1;
@@ -117,5 +117,28 @@ public final class FullMaterializationCoordinator {
             return rows;
         }
         return TagRowFilter.apply(rows, tagPolicy);
+    }
+
+    /**
+     * Resolution order for join TTL: client {@code maxStaleness} wins; else the <strong>min</strong>
+     * of the two side connectors' {@link
+     * org.emathp.connector.Connector#defaultFreshnessTtl()} — the materialized result is only as
+     * fresh as its tightest side; else the system-wide floor.
+     */
+    private static Duration resolveJoinTtl(
+            Duration clientMaxStaleness, JoinQuery jq, Map<String, Connector> connectorsByName) {
+        if (clientMaxStaleness != null) {
+            return clientMaxStaleness;
+        }
+        Connector leftConn = connectorsByName.get(jq.left().connectorName());
+        Connector rightConn = connectorsByName.get(jq.right().connectorName());
+        Duration left = leftConn != null ? leftConn.defaultFreshnessTtl() : null;
+        Duration right = rightConn != null ? rightConn.defaultFreshnessTtl() : null;
+        if (left != null && right != null) {
+            return left.compareTo(right) <= 0 ? left : right;
+        }
+        if (left != null) return left;
+        if (right != null) return right;
+        return WebDefaults.snapshotChunkFreshness();
     }
 }

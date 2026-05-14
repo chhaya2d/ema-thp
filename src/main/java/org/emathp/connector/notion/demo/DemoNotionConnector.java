@@ -1,5 +1,6 @@
 package org.emathp.connector.notion.demo;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +41,12 @@ public final class DemoNotionConnector implements Connector {
     @Override
     public int defaultFetchPageSize() {
         return DemoConnectorDefaults.PROVIDER_PAGE_SIZE;
+    }
+
+    /** Notion is an editing surface — tighter freshness window than Drive metadata. */
+    @Override
+    public Duration defaultFreshnessTtl() {
+        return Duration.ofMinutes(2);
     }
 
     @Override

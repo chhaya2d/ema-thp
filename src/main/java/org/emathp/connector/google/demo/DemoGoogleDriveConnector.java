@@ -1,5 +1,6 @@
 package org.emathp.connector.google.demo;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +42,12 @@ public final class DemoGoogleDriveConnector implements Connector {
     @Override
     public int defaultFetchPageSize() {
         return DemoConnectorDefaults.PROVIDER_PAGE_SIZE;
+    }
+
+    /** Drive metadata changes slowly; default freshness window is comfortable. */
+    @Override
+    public Duration defaultFreshnessTtl() {
+        return Duration.ofMinutes(10);
     }
 
     @Override
