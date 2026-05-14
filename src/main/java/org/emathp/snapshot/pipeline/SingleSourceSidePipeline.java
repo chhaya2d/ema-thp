@@ -8,14 +8,14 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import org.emathp.auth.UserContext;
+import org.emathp.authz.TagAccessPolicy;
 import org.emathp.connector.Connector;
 import org.emathp.engine.QueryExecutor;
-import org.emathp.engine.policy.TagAccessPolicy;
 import org.emathp.model.EngineRow;
 import org.emathp.model.Query;
 import org.emathp.planner.Planner;
 import org.emathp.planner.PushdownPlan;
+import org.emathp.query.RequestContext;
 import org.emathp.snapshot.api.SidePageRequest;
 import org.emathp.snapshot.api.SidePageResult;
 import org.emathp.snapshot.layout.ChunkNaming;
@@ -43,7 +43,7 @@ public final class SingleSourceSidePipeline {
             Duration defaultWriteTtl)
             throws IOException {
 
-        UserContext user = request.user();
+        RequestContext ctx = request.ctx();
         Connector connector = request.connector();
         Query plannerQuery = request.plannerQuery();
         Path queryRoot = request.queryRoot();
@@ -90,7 +90,7 @@ public final class SingleSourceSidePipeline {
                 request.tagPolicy() == null ? TagAccessPolicy.unrestricted() : request.tagPolicy();
         QueryExecutor.ExecutionResult er =
                 executor.execute(
-                        user,
+                        ctx,
                         connector,
                         plan.pushedQuery(),
                         plan.residualOps(),

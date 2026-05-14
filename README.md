@@ -35,12 +35,29 @@ Notion follows the same pattern: **mock** (`notion/mock`) and **demo** (`notion/
 - If **WHERE** cannot be pushed (unsupported field/operator or filtering off), **ORDER BY** and **pagination** cascade to **residual** where gated by the rules (see `planner/Planner.java` javadoc).
 - Residual **WHERE** / **ORDER BY** run in-process over fetched rows (`engine/QueryExecutor.java`, `model/ResidualOps.java`).
 
+## Identity, authz, principals
+
+- **`UserContext`** (`auth/`) carries the caller's `userId` only; `null` / blank = anonymous.
+- **`Principal`** (`authz/Principal.java`) holds tenant, primary role, role list, and per-role allowed tag set. Produced by a **`PrincipalRegistry`** (`authz/PrincipalRegistry.java`) — the single seam between the engine and "who is this caller."
+- **`authz/demo/DemoPrincipalRegistry`** is the in-memory alice/bob fixture (tenant `tenant-1`, roles `hr` / `engineering`). Swap with a JDBC / claims-backed impl for production — no other code changes.
+- **`ScopeAndPolicy`** (`authz/ScopeAndPolicy.java`) derives `QueryCacheScope` and `TagAccessPolicy` from a `Principal`; engine and snapshot code never see `Principal` directly.
+- **`PrincipalRegistry.UNRESTRICTED`** returns `Principal.anonymous()` for every caller — used by snapshot / pagination tests that don't exercise authz.
+
 ## Snapshots, cache scope, freshness
 
-- **`QueryCacheScope`** (`cache/QueryCacheScope.java`) namespaces snapshot paths by **tenant**, **role**, **user**, and a **key schema version** (`snapshotScopeDirectoryName()`). Demo mode resolves tenant/role/tags via **`DemoPrincipalRegistry`**; the UI only picks **user id**.
+- **`QueryCacheScope`** (`cache/QueryCacheScope.java`) namespaces snapshot paths by **tenant**, **role**, **user**, and a **key schema version** (`snapshotScopeDirectoryName()`). Demo mode resolves tenant/role/tags via **`DemoPrincipalRegistry`** (in `authz/demo/`); the UI only picks **user id**.
 - **Tag policy** runs in the engine **after** residual WHERE/sort and **before** `LIMIT`. Persisted chunks therefore hold **post-tag-filter** rows (“cache after tag filter”), so switching role or allowed tags yields different snapshot segments without leaking filtered rows through disk reuse.
 - Demo connectors attach optional **`tags`** on rows (parallel tag lists in each demo API file); rows with missing or empty tags are **permissive**; when the active role has **allowedTags**, the row must intersect that set.
 - The web API accepts **`maxStaleness`** (ISO-8601 duration, e.g. `PT10M`) to bound reuse of snapshot materializations; default chunk TTL comes from **`WebDefaults.snapshotChunkFreshness()`** when omitted.
+
+## Rate limiting
+
+- **`RateLimitPolicy`** (`ratelimit/RateLimitPolicy.java`) is the engine-facing interface — `tryAcquire(RequestContext) -> RateLimitResult`. Implementations: **`HierarchicalRateLimiter`** (real, three-axis token-bucket) and **`RateLimitPolicy.UNLIMITED`** (no-op, used by every snapshot / pagination test).
+- **Hierarchical AND-semantics**: each provider call must pass **connector**, **tenant**, and **user** token buckets. A denial in any bucket fails the request; earlier buckets are refunded (best-effort) so they don't leak quota.
+- **Where the check fires**: inside **`QueryExecutor.runPageLoop`**, **before each `connector.search(...)`** call. A single SQL query that does N page fetches debits N times per (connector, tenant, user). A denial throws **`RateLimitedException`** and unwinds the whole `/api/query` request — no partial rows surface.
+- **Anon short-circuit**: when `UserContext.userId()` is null/blank, or **`PrincipalRegistry.lookup`** returns `Principal.anonymous()`, **`UnifiedSnapshotWebRunner`** passes `tenantId = null` down through `SidePageRequest` / `FullMaterializationCoordinator`; the page loop sees a blank tenant and skips the limiter entirely. CLI demos and snapshot tests therefore run unlimited.
+- **Demo config** lives in **`DemoWebServer.demoRateLimitConfig()`** — uniform shape today (connector 30 rps / burst 60, tenant 10 / 20, user 5 / 10). Per-user / per-tier overrides will come via a per-key config resolver in a follow-up.
+- **Dedicated limiter tests** sit in **`src/test/java/org/emathp/ratelimit/`** (token bucket + hierarchical). Engine / snapshot / web tests inject `UNLIMITED` so bucket state never affects them.
 
 ## Full vs incremental snapshot materialization
 
@@ -62,6 +79,7 @@ Notion follows the same pattern: **mock** (`notion/mock`) and **demo** (`notion/
 | Snapshot materialization policy | `snapshot/policy/SnapshotMaterializationPolicyTest.java` |
 | Web runner / UI paging / mock user isolation | `web/WebQueryRunnerUiPagingTest.java`, `web/MockUserDataIsolationTest.java` |
 | OAuth / crypto | `oauth/*.java`, `connector/google/real/GoogleTokenStoreTest.java` |
+| Rate limiter (token bucket + hierarchical) | `src/test/java/org/emathp/ratelimit/*.java` |
 
 ## Demo web (`DemoWebServer`)
 

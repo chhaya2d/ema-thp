@@ -23,11 +23,18 @@ public final class WebQueryTraceLogger {
     private WebQueryTraceLogger() {}
 
     public static void appendTrace(String connectorMode, String sqlPreview, JsonObject result) {
+        appendTrace(null, connectorMode, sqlPreview, result);
+    }
+
+    public static void appendTrace(
+            String traceId, String connectorMode, String sqlPreview, JsonObject result) {
         try {
             synchronized (LOCK) {
                 Files.createDirectories(DEFAULT_LOG.getParent());
                 StringBuilder sb = new StringBuilder();
                 sb.append(Instant.now())
+                        .append(" | traceId=")
+                        .append(traceId != null ? traceId : "-")
                         .append(" | connectorMode=")
                         .append(connectorMode)
                         .append(" | ok=")

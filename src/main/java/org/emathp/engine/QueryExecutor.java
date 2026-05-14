@@ -3,13 +3,17 @@ package org.emathp.engine;
 import java.util.ArrayList;
 import java.util.List;
 import org.emathp.auth.UserContext;
+import org.emathp.authz.TagAccessPolicy;
 import org.emathp.connector.Connector;
-import org.emathp.model.ConnectorQuery;
-import org.emathp.engine.policy.TagAccessPolicy;
 import org.emathp.engine.policy.TagRowFilter;
-import org.emathp.model.ResidualOps;
+import org.emathp.model.ConnectorQuery;
 import org.emathp.model.EngineRow;
+import org.emathp.model.ResidualOps;
 import org.emathp.model.SearchResult;
+import org.emathp.query.RequestContext;
+import org.emathp.ratelimit.RateLimitPolicy;
+import org.emathp.ratelimit.RateLimitResult;
+import org.emathp.ratelimit.RateLimitedException;
 
 /**
  * Engine-side execution for a single connector. Responsible for:
@@ -630,22 +634,34 @@ public final class QueryExecutor {
 
     private final FilterExecutor filterExecutor = new FilterExecutor();
     private final SortExecutor sortExecutor = new SortExecutor();
+    private final RateLimitPolicy rateLimitPolicy;
+
+    public QueryExecutor() {
+        this(RateLimitPolicy.UNLIMITED);
+    }
+
+    public QueryExecutor(RateLimitPolicy rateLimitPolicy) {
+        this.rateLimitPolicy = rateLimitPolicy == null ? RateLimitPolicy.UNLIMITED : rateLimitPolicy;
+    }
 
     public ExecutionResult execute(
-            UserContext user,
+            RequestContext ctx,
             Connector connector,
             ConnectorQuery initial,
             ResidualOps residual,
             Integer logicalLimit) {
-        return execute(user, connector, initial, residual, logicalLimit, null);
+        return execute(ctx, connector, initial, residual, logicalLimit, null);
     }
 
     /**
      * Applies optional {@link TagAccessPolicy} after residual ops and before logical LIMIT — rows
      * persisted to snapshots are therefore already role-filtered when this policy is non-empty.
+     *
+     * <p>The page loop consults {@link RateLimitPolicy#tryAcquire} before each provider call when
+     * {@link RequestContext#isAnonymous()} is false. Anon callers bypass the check.
      */
     public ExecutionResult execute(
-            UserContext user,
+            RequestContext ctx,
             Connector connector,
             ConnectorQuery initial,
             ResidualOps residual,
@@ -657,7 +673,7 @@ public final class QueryExecutor {
         // we must see every row before we can sort/filter and pick the true top-N.
         Integer pageLoopCap = hasResidual ? null : logicalLimit;
 
-        PageLoopOutcome loop = runPageLoop(user, connector, initial, pageLoopCap);
+        PageLoopOutcome loop = runPageLoop(ctx, connector, initial, pageLoopCap);
 
         List<EngineRow> rows = loop.rows;
         int rowsFromConnector = rows.size();
@@ -693,13 +709,24 @@ public final class QueryExecutor {
     }
 
     private PageLoopOutcome runPageLoop(
-            UserContext user, Connector connector, ConnectorQuery initial, Integer pageLoopCap) {
+            RequestContext ctx, Connector connector, ConnectorQuery initial, Integer pageLoopCap) {
         List<EngineRow> accumulated = new ArrayList<>();
         List<PageCall> calls = new ArrayList<>();
         ConnectorQuery current = initial;
         String lastNextCursor = null;
         boolean stoppedAtLimit = false;
+        UserContext user = ctx.user();
+        boolean rateLimitOn = !ctx.isAnonymous();
         while (true) {
+            if (rateLimitOn) {
+                RateLimitResult r =
+                        rateLimitPolicy.tryAcquire(
+                                new org.emathp.ratelimit.RequestContext(
+                                        ctx.tenantId(), user.userId(), connector.source()));
+                if (!r.allowed()) {
+                    throw new RateLimitedException(r);
+                }
+            }
             SearchResult<EngineRow> page = connector.search(user, current);
             calls.add(new PageCall(current.cursor(), page.rows().size(), page.nextCursor()));
 

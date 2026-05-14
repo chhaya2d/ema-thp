@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import org.emathp.authz.TagAccessPolicy;
 import org.emathp.model.EngineRow;
 
 /** Applies {@link TagAccessPolicy} to rows before logical LIMIT. */

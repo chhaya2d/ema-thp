@@ -15,6 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.emathp.auth.UserContext;
+import org.emathp.authz.PrincipalRegistry;
+import org.emathp.authz.demo.DemoPrincipalRegistry;
 import org.emathp.cache.QueryCacheScope;
 import org.emathp.config.WebDefaults;
 import org.emathp.connector.Connector;
@@ -24,6 +26,9 @@ import org.emathp.engine.JoinExecutor;
 import org.emathp.engine.QueryExecutor;
 import org.emathp.parser.SQLParserService;
 import org.emathp.planner.Planner;
+import org.emathp.query.FederatedQueryRequest;
+import org.emathp.query.FederatedQueryService;
+import org.emathp.query.RequestContext;
 import org.emathp.snapshot.adapters.fs.FsSnapshotStore;
 import org.emathp.snapshot.adapters.time.SystemClock;
 import org.emathp.snapshot.api.SnapshotQueryService;
@@ -34,8 +39,9 @@ import org.junit.jupiter.api.io.TempDir;
 
 class WebQueryRunnerUiPagingTest {
 
-    private WebQueryRunner runner;
+    private FederatedQueryService runner;
     private QueryCacheScope scope;
+    private RequestContext ctx;
 
     @TempDir Path snapshotBase;
 
@@ -54,8 +60,9 @@ class WebQueryRunnerUiPagingTest {
                         new FsSnapshotStore(snapshotBase),
                         new SystemClock(),
                         WebDefaults.snapshotChunkFreshness());
+        PrincipalRegistry principals = new DemoPrincipalRegistry();
         runner =
-                new WebQueryRunner(
+                new DefaultFederatedQueryService(
                         new SQLParserService(),
                         planner,
                         executor,
@@ -65,8 +72,10 @@ class WebQueryRunnerUiPagingTest {
                         UserContext.anonymous(),
                         snapshots,
                         SnapshotEnvironment.TEST,
-                        WebDefaults.UI_QUERY_PAGE_SIZE_TESTS);
-        scope = DemoPrincipalRegistry.cacheScope("alice");
+                        WebDefaults.UI_QUERY_PAGE_SIZE_TESTS,
+                        principals);
+        scope = principals.cacheScopeFor("alice");
+        ctx = RequestContext.forCli(new UserContext("alice"), scope);
     }
 
     private static JsonObject googleDriveSide(JsonObject root) {
@@ -135,25 +144,31 @@ class WebQueryRunnerUiPagingTest {
 
     @Test
     void parseUiOffset_trimsAndClamps() {
-        assertEquals(0, WebQueryRunner.parseUiOffset(null));
-        assertEquals(0, WebQueryRunner.parseUiOffset(""));
-        assertEquals(0, WebQueryRunner.parseUiOffset("   "));
-        assertEquals(3, WebQueryRunner.parseUiOffset(" 3 "));
-        assertEquals(0, WebQueryRunner.parseUiOffset("-5"));
+        assertEquals(0, FederatedQueryService.parseLogicalCursorOffset(null));
+        assertEquals(0, FederatedQueryService.parseLogicalCursorOffset(""));
+        assertEquals(0, FederatedQueryService.parseLogicalCursorOffset("   "));
+        assertEquals(3, FederatedQueryService.parseLogicalCursorOffset(" 3 "));
+        assertEquals(0, FederatedQueryService.parseLogicalCursorOffset("-5"));
     }
 
     @Test
     void invalidCursor_rejected() {
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> runner.run(sqlWide(), null, "not-a-number", null, null, scope));
+        org.emathp.query.ApiException ex =
+                assertThrows(
+                        org.emathp.query.ApiException.class,
+                        () ->
+                                runner.executeOrThrow(
+                                        ctx,
+                                        new FederatedQueryRequest(
+                                                sqlWide(), null, "not-a-number", null, null)));
+        assertEquals(org.emathp.query.ErrorCode.BAD_QUERY, ex.code());
     }
 
     @Test
     void singleSource_fromNotion_runsNotionSideOnly() {
         String sql =
                 "SELECT title, updatedAt FROM notion WHERE updatedAt > '2020-01-01' ORDER BY updatedAt DESC LIMIT 20";
-        JsonObject root = runner.run(sql, null, null, null, null, scope);
+        JsonObject root = runner.executeOrThrow(ctx, new FederatedQueryRequest(sql, null, null, null, null));
         assertEquals("single", root.get("kind").getAsString());
         assertEquals(1, root.getAsJsonArray("targetConnectors").size());
         assertEquals("notion", root.getAsJsonArray("targetConnectors").get(0).getAsString());
@@ -166,14 +181,14 @@ class WebQueryRunnerUiPagingTest {
     void singleSource_fromGoogle_runsGoogleSideOnly() {
         String sql =
                 "SELECT title, updatedAt FROM google WHERE updatedAt > '2020-01-01' ORDER BY updatedAt DESC LIMIT 20";
-        JsonObject root = runner.run(sql, null, null, null, null, scope);
+        JsonObject root = runner.executeOrThrow(ctx, new FederatedQueryRequest(sql, null, null, null, null));
         assertEquals(1, root.getAsJsonArray("sides").size());
         assertEquals("google-drive", googleDriveSide(root).get("connector").getAsString());
     }
 
     @Test
     void secondWindow_slicesRows_andReusesSnapshotWithoutProviderCall() {
-        JsonObject p1 = runner.run(sqlWide(), null, null, null, null, scope);
+        JsonObject p1 = runner.executeOrThrow(ctx, new FederatedQueryRequest(sqlWide(), null, null, null, null));
         assertEquals("fresh", p1.get("freshnessDecision").getAsString());
         assertTrue(p1.get("uiPagingSupported").getAsBoolean());
         assertFalse(googleDriveSide(p1).get("snapshotReuseNoProviderCall").getAsBoolean());
@@ -182,7 +197,7 @@ class WebQueryRunnerUiPagingTest {
         assertEquals("2", p1.get("uiNextCursor").getAsString());
         assertNotion_sqlWide_residualSortAndSnapshots(p1, false, true);
 
-        JsonObject p2 = runner.run(sqlWide(), null, "2", null, null, scope);
+        JsonObject p2 = runner.executeOrThrow(ctx, new FederatedQueryRequest(sqlWide(), null, "2", null, null));
         assertEquals("fresh", p2.get("freshnessDecision").getAsString());
         assertFalse(
                 googleDriveSide(p2).get("snapshotReuseNoProviderCall").getAsBoolean(),
@@ -192,7 +207,7 @@ class WebQueryRunnerUiPagingTest {
         assertNotion_sqlWide_residualSortAndSnapshots(p2, true, false);
         assertNotEquals(firstNotionTitle(p1), firstNotionTitle(p2));
 
-        JsonObject pLast = runner.run(sqlWide(), null, "6", null, null, scope);
+        JsonObject pLast = runner.executeOrThrow(ctx, new FederatedQueryRequest(sqlWide(), null, "6", null, null));
         assertFalse(googleDriveSide(pLast).get("snapshotReuseNoProviderCall").getAsBoolean());
         assertEquals(2, googleDriveSide(pLast).getAsJsonObject("execution").getAsJsonArray("rows").size());
         assertEquals(8, googleDriveSide(pLast).getAsJsonObject("execution").get("uiRowTotal").getAsInt());
@@ -209,7 +224,7 @@ class WebQueryRunnerUiPagingTest {
     void join_snapshotsRows_onlySecondPageReusesDisk() {
         String sql =
                 "SELECT g.title, n.title FROM google g JOIN notion n ON g.title = n.title LIMIT 10";
-        JsonObject r1 = runner.run(sql, null, null, null, null, scope);
+        JsonObject r1 = runner.executeOrThrow(ctx, new FederatedQueryRequest(sql, null, null, null, null));
         assertEquals("join", r1.get("kind").getAsString());
         assertTrue(r1.get("snapshotBacked").getAsBoolean());
         assertFalse(r1.get("fullMaterializationReuse").getAsBoolean());
@@ -217,7 +232,7 @@ class WebQueryRunnerUiPagingTest {
         assertFalse(page0.has("left"));
         assertFalse(page0.has("right"));
 
-        JsonObject r2 = runner.run(sql, null, "2", null, null, scope);
+        JsonObject r2 = runner.executeOrThrow(ctx, new FederatedQueryRequest(sql, null, "2", null, null));
         assertTrue(r2.get("fullMaterializationReuse").getAsBoolean());
     }
 }

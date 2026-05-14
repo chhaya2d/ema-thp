@@ -30,6 +30,7 @@ import org.emathp.model.Query;
 import org.emathp.parser.SQLParserService;
 import org.emathp.planner.Planner;
 import org.emathp.planner.PushdownPlan;
+import org.emathp.query.RequestContext;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +49,7 @@ class FederatedDemosTest {
     private Connector google;
     private Connector notion;
     private UserContext user;
+    private RequestContext ctx;
 
     @BeforeEach
     void setUp() {
@@ -58,6 +60,7 @@ class FederatedDemosTest {
         google = new GoogleDriveConnector();
         notion = new NotionConnector();
         user = UserContext.anonymous();
+        ctx = RequestContext.forEngine(user);
     }
 
     @Test
@@ -69,7 +72,7 @@ class FederatedDemosTest {
         assertPushed(plan.pushedQuery(), "WHERE", "ORDER BY", "PROJECTION", "PAGINATION");
 
         QueryExecutor.ExecutionResult exec =
-                executor.execute(user, google, plan.pushedQuery(), plan.residualOps(), q.limit());
+                executor.execute(ctx, google, plan.pushedQuery(), plan.residualOps(), q.limit());
         assertFalse(exec.residualApplied());
         assertEquals(4, exec.rows().size());
         assertEquals(
@@ -97,7 +100,7 @@ class FederatedDemosTest {
         assertFalse(plan.residualOps().orderBy().isEmpty());
 
         QueryExecutor.ExecutionResult exec =
-                executor.execute(user, notion, plan.pushedQuery(), plan.residualOps(), q.limit());
+                executor.execute(ctx, notion, plan.pushedQuery(), plan.residualOps(), q.limit());
         assertTrue(exec.residualApplied());
         assertEquals(4, exec.rows().size());
         assertEquals(
@@ -118,7 +121,7 @@ class FederatedDemosTest {
         assertNotNull(plan.residualOps().where());
 
         QueryExecutor.ExecutionResult exec =
-                executor.execute(user, google, plan.pushedQuery(), plan.residualOps(), q.limit());
+                executor.execute(ctx, google, plan.pushedQuery(), plan.residualOps(), q.limit());
         assertTrue(exec.residualApplied());
         assertEquals(3, exec.rows().size());
         assertEquals(
@@ -137,7 +140,7 @@ class FederatedDemosTest {
                 plan.pendingOperations());
 
         QueryExecutor.ExecutionResult exec =
-                executor.execute(user, notion, plan.pushedQuery(), plan.residualOps(), q.limit());
+                executor.execute(ctx, notion, plan.pushedQuery(), plan.residualOps(), q.limit());
         assertTrue(exec.residualApplied());
         assertEquals(3, exec.rows().size());
         assertEquals(
@@ -156,7 +159,7 @@ class FederatedDemosTest {
         assertNotNull(plan.residualOps().where());
 
         QueryExecutor.ExecutionResult exec =
-                executor.execute(user, google, plan.pushedQuery(), plan.residualOps(), q.limit());
+                executor.execute(ctx, google, plan.pushedQuery(), plan.residualOps(), q.limit());
         assertTrue(exec.residualApplied());
         assertEquals(1, exec.rows().size());
         EngineRow row0 = exec.rows().get(0);
@@ -171,7 +174,7 @@ class FederatedDemosTest {
         assertNull(plan.pushedQuery().where());
 
         QueryExecutor.ExecutionResult exec =
-                executor.execute(user, notion, plan.pushedQuery(), plan.residualOps(), q.limit());
+                executor.execute(ctx, notion, plan.pushedQuery(), plan.residualOps(), q.limit());
         assertTrue(exec.residualApplied());
         assertTrue(exec.rows().isEmpty());
     }
@@ -194,14 +197,14 @@ class FederatedDemosTest {
         connectorsByName.put("notion", notion);
 
         MaterializedPage p1 =
-                JoinRunner.run(joinExecutor, user, connectorsByName, page1Query);
+                JoinRunner.run(joinExecutor, ctx, connectorsByName, page1Query);
         assertEquals(2, p1.upstreamRowCount());
         assertEquals(1, p1.rows().size());
         assertNotNull(p1.nextCursor());
 
         JoinQuery page2Query =
                 page1Query.withPagination(p1.nextCursor(), page1Query.pageSize());
-        MaterializedPage p2 = JoinRunner.run(joinExecutor, user, connectorsByName, page2Query);
+        MaterializedPage p2 = JoinRunner.run(joinExecutor, ctx, connectorsByName, page2Query);
         assertEquals(1, p2.rows().size());
         assertNull(p2.nextCursor());
 

@@ -8,24 +8,25 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import org.emathp.auth.UserContext;
+import org.emathp.authz.TagAccessPolicy;
 import org.emathp.config.WebDefaults;
 import org.emathp.connector.Connector;
 import org.emathp.engine.JoinExecutor;
-import org.emathp.engine.policy.TagAccessPolicy;
 import org.emathp.engine.policy.TagRowFilter;
 import org.emathp.federation.MaterializedPage;
 import org.emathp.federation.MaterializedRowSet;
 import org.emathp.federation.OffsetCursorPager;
 import org.emathp.model.EngineRow;
 import org.emathp.model.JoinQuery;
+import org.emathp.query.RequestContext;
 import org.emathp.snapshot.model.ChunkMetadata;
 import org.emathp.snapshot.ports.Clock;
 import org.emathp.snapshot.ports.SnapshotStore;
 
 /**
  * Runs engine-composed queries with the same snapshot semantics as residual single-source work:
- * always fully materialise when persistence is enabled (see {@link org.emathp.snapshot.policy.SnapshotMaterializationPolicy#requiresFullMaterialization}).
+ * always fully materialise when persistence is enabled (see {@link
+ * org.emathp.snapshot.policy.SnapshotMaterializationPolicy#requiresFullMaterialization}).
  */
 public final class FullMaterializationCoordinator {
 
@@ -34,11 +35,11 @@ public final class FullMaterializationCoordinator {
     public record Outcome(MaterializedPage paged, boolean reusedFromDisk) {}
 
     public static Outcome run(
+            RequestContext ctx,
             JoinQuery jq,
             boolean persistenceEnabled,
             Path queryRoot,
             Duration maxStaleness,
-            UserContext user,
             JoinExecutor joinExecutor,
             Map<String, Connector> connectorsByName,
             SnapshotStore store,
@@ -48,7 +49,7 @@ public final class FullMaterializationCoordinator {
 
         if (!persistenceEnabled) {
             return new Outcome(
-                    materializeAndPage(joinExecutor, user, connectorsByName, jq, tagPolicy), false);
+                    materializeAndPage(ctx, joinExecutor, connectorsByName, jq, tagPolicy), false);
         }
 
         Instant now = clock.now();
@@ -66,7 +67,7 @@ public final class FullMaterializationCoordinator {
             return new Outcome(paged, true);
         }
 
-        List<EngineRow> combined = joinExecutor.materialize(user, connectorsByName, jq);
+        List<EngineRow> combined = joinExecutor.materialize(ctx, connectorsByName, jq);
         combined = applyTagPolicy(combined, tagPolicy);
         MaterializedRowSet rowSet = MaterializedRowSet.limitedFrom(combined, jq.limit());
         MaterializedPage paged = OffsetCursorPager.page(rowSet, jq.cursor(), jq.pageSize());
@@ -94,12 +95,12 @@ public final class FullMaterializationCoordinator {
     }
 
     private static MaterializedPage materializeAndPage(
+            RequestContext ctx,
             JoinExecutor joinExecutor,
-            UserContext user,
             Map<String, Connector> connectorsByName,
             JoinQuery jq,
             TagAccessPolicy tagPolicy) {
-        List<EngineRow> combined = joinExecutor.materialize(user, connectorsByName, jq);
+        List<EngineRow> combined = joinExecutor.materialize(ctx, connectorsByName, jq);
         combined = applyTagPolicy(combined, tagPolicy);
         MaterializedRowSet rowSet = MaterializedRowSet.limitedFrom(combined, jq.limit());
         return OffsetCursorPager.page(rowSet, jq.cursor(), jq.pageSize());

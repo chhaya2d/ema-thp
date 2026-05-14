@@ -2,14 +2,21 @@ package org.emathp.snapshot.api;
 
 import java.nio.file.Path;
 import java.time.Duration;
-import org.emathp.auth.UserContext;
+import org.emathp.authz.TagAccessPolicy;
 import org.emathp.connector.Connector;
-import org.emathp.engine.policy.TagAccessPolicy;
 import org.emathp.model.Query;
+import org.emathp.query.RequestContext;
 
-/** One connector side + shared query snapshot directory + client freshness bound + optional tag RBAC. */
+/**
+ * One connector side + shared query snapshot directory + client freshness bound + optional tag
+ * RBAC.
+ *
+ * <p>{@link RequestContext} carries identity (user, tenantId, traceId) the pipeline forwards to
+ * {@link org.emathp.engine.QueryExecutor}. Pipeline-only fields (connector, planner query,
+ * snapshot path, freshness hint, persistence flag, tag policy) stay on the request.
+ */
 public record SidePageRequest(
-        UserContext user,
+        RequestContext ctx,
         Connector connector,
         Query plannerQuery,
         Path queryRoot,
@@ -18,14 +25,14 @@ public record SidePageRequest(
         TagAccessPolicy tagPolicy) {
 
     public SidePageRequest(
-            UserContext user,
+            RequestContext ctx,
             Connector connector,
             Query plannerQuery,
             Path queryRoot,
             Duration maxStaleness,
             boolean persistConnectorSnapshot) {
         this(
-                user,
+                ctx,
                 connector,
                 plannerQuery,
                 queryRoot,
@@ -34,7 +41,12 @@ public record SidePageRequest(
                 TagAccessPolicy.unrestricted());
     }
 
-    public SidePageRequest(UserContext user, Connector connector, Query plannerQuery, Path queryRoot, Duration maxStaleness) {
-        this(user, connector, plannerQuery, queryRoot, maxStaleness, true);
+    public SidePageRequest(
+            RequestContext ctx,
+            Connector connector,
+            Query plannerQuery,
+            Path queryRoot,
+            Duration maxStaleness) {
+        this(ctx, connector, plannerQuery, queryRoot, maxStaleness, true);
     }
 }

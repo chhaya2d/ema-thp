@@ -14,12 +14,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import org.emathp.auth.UserContext;
+import org.emathp.authz.Principal;
+import org.emathp.authz.PrincipalRegistry;
+import org.emathp.authz.ScopeAndPolicy;
+import org.emathp.authz.TagAccessPolicy;
 import org.emathp.cache.ParsedQueryNormalizer;
 import org.emathp.cache.QueryCacheScope;
 import org.emathp.connector.Connector;
 import org.emathp.engine.JoinExecutor;
 import org.emathp.engine.QueryExecutor;
-import org.emathp.engine.policy.TagAccessPolicy;
+import org.emathp.federation.MaterializedPage;
 import org.emathp.model.ComparisonExpr;
 import org.emathp.model.ConnectorQuery;
 import org.emathp.model.EngineRow;
@@ -27,16 +31,17 @@ import org.emathp.model.JoinQuery;
 import org.emathp.model.ParsedQuery;
 import org.emathp.model.Query;
 import org.emathp.model.ResidualOps;
+import org.emathp.pagination.UiResponsePaging;
 import org.emathp.planner.Planner;
 import org.emathp.planner.PushdownPlan;
+import org.emathp.query.FederatedQueryRequest;
+import org.emathp.query.RequestContext;
 import org.emathp.snapshot.api.SidePageRequest;
 import org.emathp.snapshot.api.SidePageResult;
 import org.emathp.snapshot.api.SnapshotQueryService;
 import org.emathp.snapshot.layout.QuerySnapshotHasher;
-import org.emathp.federation.MaterializedPage;
 import org.emathp.snapshot.model.LogicalPagination;
 import org.emathp.snapshot.model.SnapshotEnvironment;
-import org.emathp.pagination.UiResponsePaging;
 import org.emathp.snapshot.pipeline.FullMaterializationCoordinator;
 import org.emathp.snapshot.policy.SnapshotMaterializationPolicy;
 
@@ -53,6 +58,7 @@ final class UnifiedSnapshotWebRunner {
     private final SnapshotQueryService snapshotQueryService;
     private final SnapshotEnvironment snapshotEnv;
     private final int uiPageSize;
+    private final PrincipalRegistry principals;
 
     UnifiedSnapshotWebRunner(
             Planner planner,
@@ -61,7 +67,8 @@ final class UnifiedSnapshotWebRunner {
             Map<String, Connector> connectorsByName,
             SnapshotQueryService snapshotQueryService,
             SnapshotEnvironment snapshotEnv,
-            int uiPageSize) {
+            int uiPageSize,
+            PrincipalRegistry principals) {
         this.planner = planner;
         this.joinExecutor = joinExecutor;
         this.connectors = connectors;
@@ -69,32 +76,33 @@ final class UnifiedSnapshotWebRunner {
         this.snapshotQueryService = snapshotQueryService;
         this.snapshotEnv = snapshotEnv;
         this.uiPageSize = uiPageSize;
+        this.principals = principals;
     }
 
-    JsonObject runParsed(
-            ParsedQuery parsed,
-            Integer pageNumber,
-            String uiCursorOffset,
-            Integer requestPageSize,
-            Duration maxStaleness,
-            QueryCacheScope scope)
+    private TagAccessPolicy tagPolicyFor(QueryCacheScope scope) {
+        Principal p = principals.lookup(new UserContext(scope.userId()));
+        return ScopeAndPolicy.tagPolicy(p, scope.roleSlug());
+    }
+
+    JsonObject runParsed(RequestContext ctx, ParsedQuery parsed, FederatedQueryRequest req)
             throws IOException {
 
-        int effectivePageSize = effectiveUiPageSize(requestPageSize);
-        int startRow = computeStartRow(pageNumber, uiCursorOffset, effectivePageSize);
+        int effectivePageSize = effectiveUiPageSize(req.requestPageSize());
+        int startRow = computeStartRow(req.pageNumber(), req.logicalCursorOffset(), effectivePageSize);
 
         if (SnapshotMaterializationPolicy.requiresFullMaterialization(parsed)) {
-            return renderFullMaterializationResponse(parsed, startRow, effectivePageSize, maxStaleness, scope);
+            return renderFullMaterializationResponse(
+                    ctx, parsed, startRow, effectivePageSize, req.maxStaleness());
         }
-        return runSingle((Query) parsed, startRow, effectivePageSize, maxStaleness, scope);
+        return runSingle(ctx, (Query) parsed, startRow, effectivePageSize, req.maxStaleness());
     }
 
     private JsonObject runSingle(
-            Query rawQuery, int startRow, int effectivePageSize, Duration maxStaleness, QueryCacheScope scope)
+            RequestContext ctx, Query rawQuery, int startRow, int effectivePageSize, Duration maxStaleness)
             throws IOException {
         Query plannerQuery = rawQuery.withPagination(null, 1);
-        UserContext requestUser = new UserContext(scope.userId());
-        TagAccessPolicy tagPolicy = DemoPrincipalRegistry.tagPolicyFor(scope);
+        QueryCacheScope scope = ctx.scope();
+        TagAccessPolicy tagPolicy = tagPolicyFor(scope);
 
         String normalized = ParsedQueryNormalizer.canonicalSnapshotIdentity(rawQuery);
         String queryHash = QuerySnapshotHasher.hashForPath(normalized);
@@ -142,7 +150,7 @@ final class UnifiedSnapshotWebRunner {
 
         JsonArray sides = new JsonArray();
         for (Connector c : activeConnectors) {
-            sides.add(executeSideSnapshot(plannerQuery, c, queryRoot, maxStaleness, requestUser, tagPolicy));
+            sides.add(executeSideSnapshot(ctx, plannerQuery, c, queryRoot, maxStaleness, tagPolicy));
         }
         root.add("sides", sides);
         root.addProperty("providerFetchSummary", summarizeSidesFetchMode(sides));
@@ -154,15 +162,15 @@ final class UnifiedSnapshotWebRunner {
     }
 
     private JsonObject renderFullMaterializationResponse(
+            RequestContext ctx,
             ParsedQuery pq,
             int startRow,
             int effectivePageSize,
-            Duration maxStaleness,
-            QueryCacheScope scope)
+            Duration maxStaleness)
             throws IOException {
         JoinQuery jq = (JoinQuery) pq;
-        UserContext requestUser = new UserContext(scope.userId());
-        TagAccessPolicy tagPolicy = DemoPrincipalRegistry.tagPolicyFor(scope);
+        QueryCacheScope scope = ctx.scope();
+        TagAccessPolicy tagPolicy = tagPolicyFor(scope);
         boolean snap = snapshotQueryService.persistSnapshotMaterialization();
         String normalized = ParsedQueryNormalizer.canonicalSnapshotIdentity(jq);
         String queryHash = QuerySnapshotHasher.hashForPath(normalized);
@@ -177,11 +185,11 @@ final class UnifiedSnapshotWebRunner {
 
         FullMaterializationCoordinator.Outcome out =
                 FullMaterializationCoordinator.run(
+                        ctx,
                         jq,
                         snap,
                         queryRoot,
                         maxStaleness,
-                        requestUser,
                         joinExecutor,
                         connectorsByName,
                         snapshotQueryService.store(),
@@ -249,11 +257,11 @@ final class UnifiedSnapshotWebRunner {
     }
 
     private JsonObject executeSideSnapshot(
+            RequestContext ctx,
             Query plannerQuery,
             Connector connector,
             Path queryRoot,
             Duration maxStaleness,
-            UserContext requestUser,
             TagAccessPolicy tagPolicy)
             throws IOException {
 
@@ -261,7 +269,7 @@ final class UnifiedSnapshotWebRunner {
         SidePageResult out =
                 snapshotQueryService.resolveSide(
                         new SidePageRequest(
-                                requestUser,
+                                ctx,
                                 connector,
                                 plannerQuery,
                                 queryRoot,

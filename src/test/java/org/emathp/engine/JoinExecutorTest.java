@@ -85,7 +85,11 @@ class JoinExecutorTest {
     }
 
     private MaterializedPage run(JoinQuery jq) {
-        return JoinRunner.run(joinExecutor, UserContext.anonymous(), connectors, jq);
+        return JoinRunner.run(
+                joinExecutor,
+                org.emathp.query.RequestContext.forEngine(UserContext.anonymous()),
+                connectors,
+                jq);
     }
 
     // ---- Happy path ----

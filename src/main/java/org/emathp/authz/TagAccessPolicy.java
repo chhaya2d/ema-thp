@@ -1,7 +1,6 @@
-package org.emathp.engine.policy;
+package org.emathp.authz;
 
 import java.util.Collection;
-import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;

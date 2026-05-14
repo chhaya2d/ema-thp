@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.emathp.auth.UserContext;
+import org.emathp.authz.PrincipalRegistry;
 import org.emathp.config.WebDefaults;
 import org.emathp.connector.Connector;
 import org.emathp.connector.CountingConnector;
@@ -23,8 +24,11 @@ import org.emathp.planner.Planner;
 import org.emathp.snapshot.adapters.fs.FsSnapshotStore;
 import org.emathp.snapshot.adapters.time.SystemClock;
 import org.emathp.snapshot.api.SnapshotQueryService;
+import org.emathp.query.FederatedQueryRequest;
+import org.emathp.query.FederatedQueryService;
+import org.emathp.query.RequestContext;
 import org.emathp.snapshot.model.SnapshotEnvironment;
-import org.emathp.web.WebQueryRunner;
+import org.emathp.web.DefaultFederatedQueryService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -53,8 +57,8 @@ class IncrementalSnapshotExpansionTest {
                         new FsSnapshotStore(base),
                         new SystemClock(),
                         WebDefaults.snapshotChunkFreshness());
-        WebQueryRunner runner =
-                new WebQueryRunner(
+        FederatedQueryService runner =
+                new DefaultFederatedQueryService(
                         new SQLParserService(),
                         planner,
                         executor,
@@ -64,16 +68,19 @@ class IncrementalSnapshotExpansionTest {
                         UserContext.anonymous(),
                         snapshots,
                         SnapshotEnvironment.TEST,
-                        2);
+                        2,
+                        PrincipalRegistry.UNRESTRICTED);
 
         String sql =
                 "SELECT title, updatedAt FROM resources WHERE updatedAt > '2020-01-01' ORDER BY updatedAt DESC LIMIT 20";
-        JsonObject p0 = runner.run(sql, null, null, null, null, runner.cacheScope());
+        var scope = runner.defaultCacheScope();
+        RequestContext ctx = RequestContext.forCli(UserContext.anonymous(), scope);
+        JsonObject p0 = runner.executeOrThrow(ctx, new FederatedQueryRequest(sql, null, null, null, null));
         int searchesAfterFirst = notion.searchCount();
         assertTrue(searchesAfterFirst >= 1);
         assertFalse(sideNotion(p0).get("snapshotReuseNoProviderCall").getAsBoolean());
 
-        JsonObject pDeep = runner.run(sql, null, "6", null, null, runner.cacheScope());
+        JsonObject pDeep = runner.executeOrThrow(ctx, new FederatedQueryRequest(sql, null, "6", null, null));
         assertEquals(searchesAfterFirst, notion.searchCount());
         assertTrue(sideNotion(pDeep).get("snapshotReuseNoProviderCall").getAsBoolean());
 

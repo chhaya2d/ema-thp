@@ -11,7 +11,7 @@ import org.emathp.auth.UserContext;
  *     _} when absent
  * @param tenantId logical tenant for isolation
  * @param roleSlug active role for this request (demo uses primary role from {@link
- *     org.emathp.web.DemoPrincipalRegistry})
+ *     org.emathp.authz.demo.DemoPrincipalRegistry})
  * @param keySchemaVersion bump when serialization of snapshot identity changes
  */
 public record QueryCacheScope(String userId, String tenantId, String roleSlug, int keySchemaVersion) {
@@ -30,7 +30,7 @@ public record QueryCacheScope(String userId, String tenantId, String roleSlug, i
         return new QueryCacheScope(uid, "_default", "_guest", CURRENT_KEY_SCHEMA);
     }
 
-    /** Demo playground tenants / roles (see {@link org.emathp.web.DemoPrincipalRegistry}). */
+    /** Demo playground tenants / roles (see {@link org.emathp.authz.demo.DemoPrincipalRegistry}). */
     public static QueryCacheScope forDemo(String userId, String tenantId, String roleSlug) {
         String uid = userId == null || userId.isBlank() ? "_" : userId.trim();
         String t = tenantId == null || tenantId.isBlank() ? "_" : tenantId.trim();

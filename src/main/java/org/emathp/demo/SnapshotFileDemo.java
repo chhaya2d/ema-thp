@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.emathp.auth.UserContext;
+import org.emathp.authz.PrincipalRegistry;
 import org.emathp.config.RuntimeEnv;
 import org.emathp.config.WebDefaults;
 import org.emathp.connector.Connector;
@@ -15,11 +16,14 @@ import org.emathp.engine.JoinExecutor;
 import org.emathp.engine.QueryExecutor;
 import org.emathp.parser.SQLParserService;
 import org.emathp.planner.Planner;
+import org.emathp.query.FederatedQueryRequest;
+import org.emathp.query.FederatedQueryService;
+import org.emathp.query.RequestContext;
 import org.emathp.snapshot.adapters.fs.FsSnapshotStore;
 import org.emathp.snapshot.adapters.time.SystemClock;
 import org.emathp.snapshot.api.SnapshotQueryService;
 import org.emathp.snapshot.model.SnapshotEnvironment;
-import org.emathp.web.WebQueryRunner;
+import org.emathp.web.DefaultFederatedQueryService;
 
 /** CLI demonstration of filesystem snapshots (prints queryHash, paths, fetch counts, freshness). */
 public final class SnapshotFileDemo {
@@ -45,8 +49,8 @@ public final class SnapshotFileDemo {
                         new FsSnapshotStore(base),
                         new SystemClock(),
                         WebDefaults.snapshotChunkFreshness());
-        WebQueryRunner runner =
-                new WebQueryRunner(
+        FederatedQueryService runner =
+                new DefaultFederatedQueryService(
                         new SQLParserService(),
                         planner,
                         executor,
@@ -56,25 +60,28 @@ public final class SnapshotFileDemo {
                         UserContext.anonymous(),
                         snapshots,
                         SnapshotEnvironment.TEST,
-                        WebDefaults.UI_QUERY_PAGE_SIZE_MOCK);
+                        WebDefaults.UI_QUERY_PAGE_SIZE_MOCK,
+                        PrincipalRegistry.UNRESTRICTED);
 
         String sql =
                 "SELECT title, updatedAt FROM resources WHERE updatedAt > '2020-01-01' ORDER BY updatedAt DESC LIMIT 20";
+        var scope = runner.defaultCacheScope();
+        RequestContext ctx = RequestContext.forCli(UserContext.anonymous(), scope);
 
         printStep("1) Page 0 — QueryExecutor runs; residual legs (Notion here) persist connector chunks");
-        JsonObject p0 = runner.run(sql, null, null, null, null, runner.cacheScope());
+        JsonObject p0 = runner.executeOrThrow(ctx, new FederatedQueryRequest(sql, null, null, null, null));
         printSnapshotSummary(p0);
 
         printStep("2) Page 1 — residual leg may reuse chunks; pure pushdown legs re-run live");
-        JsonObject p1 = runner.run(sql, null, "2", null, null, runner.cacheScope());
+        JsonObject p1 = runner.executeOrThrow(ctx, new FederatedQueryRequest(sql, null, "2", null, null));
         printSnapshotSummary(p1);
 
         printStep("3) Page offset 6 — same pattern (Notion snapshot vs Google live)");
-        JsonObject p3 = runner.run(sql, null, "6", null, null, runner.cacheScope());
+        JsonObject p3 = runner.executeOrThrow(ctx, new FederatedQueryRequest(sql, null, "6", null, null));
         printSnapshotSummary(p3);
 
         printStep("4) Repeat offset 6");
-        JsonObject p3b = runner.run(sql, null, "6", null, null, runner.cacheScope());
+        JsonObject p3b = runner.executeOrThrow(ctx, new FederatedQueryRequest(sql, null, "6", null, null));
         printSnapshotSummary(p3b);
 
         System.out.println("\nInspect chunk files under: " + p0.get("snapshotPath").getAsString());

@@ -16,15 +16,16 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.time.Instant;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.sql.DataSource;
 import org.emathp.auth.ConnectorAccount;
+import org.emathp.authz.PrincipalRegistry;
+import org.emathp.authz.demo.DemoPrincipalRegistry;
 import org.emathp.cache.QueryCacheScope;
 import java.nio.file.Path;
-import java.time.Duration;
 import org.emathp.snapshot.adapters.fs.FsSnapshotStore;
 import org.emathp.snapshot.adapters.time.SystemClock;
 import org.emathp.snapshot.api.SnapshotQueryService;
@@ -46,8 +47,17 @@ import org.emathp.engine.QueryExecutor;
 import org.emathp.oauth.GoogleOAuthService;
 import org.emathp.oauth.Pkce;
 import org.emathp.oauth.TokenEncryptor;
+import org.emathp.authz.Principal;
 import org.emathp.parser.SQLParserService;
 import org.emathp.planner.Planner;
+import org.emathp.query.ErrorCode;
+import org.emathp.query.FederatedQueryService;
+import org.emathp.query.RequestContext;
+import org.emathp.query.ResponseContext;
+import org.emathp.ratelimit.HierarchicalRateLimiter;
+import org.emathp.ratelimit.HierarchicalRateLimiterConfig;
+import org.emathp.ratelimit.RateLimitPolicy;
+import org.emathp.ratelimit.TokenBucketConfig;
 import org.h2.jdbcx.JdbcDataSource;
 import org.postgresql.ds.PGSimpleDataSource;
 
@@ -66,10 +76,23 @@ public final class DemoWebServer {
                     + "restart the server.";
 
     private record LiveWebStack(
-            WebQueryRunner runner,
+            FederatedQueryService service,
             GoogleTokenStore store,
             GoogleOAuthService oauth,
             TokenEncryptor encryptor) {}
+
+    /**
+     * Demo / live default rate-limit shape: per-connector 30 rps (burst 60), per-tenant 10 rps
+     * (burst 20), per-user 5 rps (burst 10). Anon callers bypass the limiter entirely (see
+     * {@link UnifiedSnapshotWebRunner}'s tenantId resolver). Per-user / per-tier overrides are a
+     * follow-up — today the same shape applies to every (tenant, user, connector).
+     */
+    private static HierarchicalRateLimiterConfig demoRateLimitConfig() {
+        return new HierarchicalRateLimiterConfig(
+                new TokenBucketConfig(30.0, 60.0),
+                new TokenBucketConfig(10.0, 20.0),
+                new TokenBucketConfig(5.0, 10.0));
+    }
 
     private static boolean liveConnectorEnvLooksComplete() {
         String key = RuntimeEnv.getOrNull("CONNECTOR_TOKEN_KEY");
@@ -84,10 +107,14 @@ public final class DemoWebServer {
     }
 
     /**
-     * Builds the live Google {@link WebQueryRunner} when env and DB init succeed; otherwise {@code
-     * null} (demo fixtures remain available).
+     * Builds the live Google {@link FederatedQueryService} when env and DB init succeed; otherwise
+     * {@code null} (demo fixtures remain available).
      */
-    private static LiveWebStack tryCreateLiveWebStack(WebEnv env, SQLParserService parser) {
+    private static LiveWebStack tryCreateLiveWebStack(
+            WebEnv env,
+            SQLParserService parser,
+            PrincipalRegistry principals,
+            RateLimitPolicy rateLimitPolicy) {
         if (!liveConnectorEnvLooksComplete()) {
             return null;
         }
@@ -105,7 +132,7 @@ public final class DemoWebServer {
             MockConnectorDevSettings mockDev = MockConnectorDevSettings.compiled();
             connectorsByName.put("notion", new NotionConnector(mockDev));
             Planner planner = new Planner();
-            QueryExecutor executor = new QueryExecutor();
+            QueryExecutor executor = new QueryExecutor(rateLimitPolicy);
             JoinExecutor joinExecutor = new JoinExecutor(planner, executor);
             UserContext user = new UserContext(env.demoUserId());
             SnapshotQueryService snapshots =
@@ -115,8 +142,8 @@ public final class DemoWebServer {
                             new FsSnapshotStore(Path.of("data")),
                             new SystemClock(),
                             WebDefaults.snapshotChunkFreshness());
-            WebQueryRunner liveQueryRunner =
-                    new WebQueryRunner(
+            FederatedQueryService liveService =
+                    new DefaultFederatedQueryService(
                             parser,
                             planner,
                             executor,
@@ -126,23 +153,13 @@ public final class DemoWebServer {
                             user,
                             snapshots,
                             SnapshotEnvironment.PROD,
-                            WebDefaults.UI_QUERY_PAGE_SIZE);
-            return new LiveWebStack(liveQueryRunner, store, oauth, encryptor);
+                            WebDefaults.UI_QUERY_PAGE_SIZE,
+                            principals);
+            return new LiveWebStack(liveService, store, oauth, encryptor);
         } catch (Exception e) {
             System.err.println("Live Google stack init failed (demo fixtures still work): " + e.getMessage());
             e.printStackTrace(System.err);
             return null;
-        }
-    }
-
-    private static void sendLiveStackUnavailable(HttpExchange ex, boolean json) throws IOException {
-        if (json) {
-            JsonObject hint = new JsonObject();
-            hint.addProperty("ok", false);
-            hint.addProperty("error", LIVE_STACK_CONFIG_HELP);
-            sendJson(ex, 503, hint);
-        } else {
-            sendBytes(ex, 503, "text/html; charset=utf-8", "<p>" + esc(LIVE_STACK_CONFIG_HELP) + "</p>");
         }
     }
 
@@ -481,12 +498,14 @@ public final class DemoWebServer {
 
     private static void runHybridDemoServer(WebEnv env) throws Exception {
         SQLParserService parser = new SQLParserService();
-        LiveWebStack live = tryCreateLiveWebStack(env, parser);
-        WebQueryRunner liveQueryRunner = live != null ? live.runner() : null;
+        PrincipalRegistry principals = new DemoPrincipalRegistry();
+        RateLimitPolicy rateLimitPolicy = new HierarchicalRateLimiter(demoRateLimitConfig());
+        LiveWebStack live = tryCreateLiveWebStack(env, parser, principals, rateLimitPolicy);
+        FederatedQueryService liveService = live != null ? live.service() : null;
         GoogleTokenStore store = live != null ? live.store() : null;
 
         Planner demoPlanner = new Planner(true);
-        QueryExecutor demoExecutor = new QueryExecutor();
+        QueryExecutor demoExecutor = new QueryExecutor(rateLimitPolicy);
         JoinExecutor demoJoinExecutor = new JoinExecutor(demoPlanner, demoExecutor);
         SnapshotQueryService demoSnapshots =
                 new SnapshotQueryService(
@@ -498,8 +517,8 @@ public final class DemoWebServer {
         Map<String, Connector> demoConnectorsByName = new LinkedHashMap<>();
         demoConnectorsByName.put("google", new DemoGoogleDriveConnector());
         demoConnectorsByName.put("notion", new DemoNotionConnector());
-        WebQueryRunner demoQueryRunner =
-                new WebQueryRunner(
+        FederatedQueryService demoService =
+                new DefaultFederatedQueryService(
                         parser,
                         demoPlanner,
                         demoExecutor,
@@ -509,8 +528,10 @@ public final class DemoWebServer {
                         UserContext.anonymous(),
                         demoSnapshots,
                         SnapshotEnvironment.TEST,
-                        WebDefaults.UI_QUERY_PAGE_SIZE_DEMO);
+                        WebDefaults.UI_QUERY_PAGE_SIZE_DEMO,
+                        principals);
 
+        WebQueryService webQueryService = new WebQueryService(demoService, liveService);
         boolean liveConfigured = live != null;
         HttpServer http =
                 HttpServer.create(
@@ -531,7 +552,12 @@ public final class DemoWebServer {
         http.createContext(
                 "/api/query",
                 exchange ->
-                        handleQuery(exchange, liveQueryRunner, demoQueryRunner, env.demoUserId(), store));
+                        handleQuery(
+                                exchange,
+                                webQueryService,
+                                env.demoUserId(),
+                                store,
+                                principals));
 
         http.setExecutor(null);
         http.start();
@@ -745,16 +771,17 @@ public final class DemoWebServer {
     }
 
     /**
-     * @param liveRunner OAuth-backed stack, or {@code null} when live env / DB init did not succeed
-     * @param demoRunner demo Google + demo Notion stack
+     * @param webQueryService routes demo vs live {@link FederatedQueryService}
      */
     private static void handleQuery(
             HttpExchange ex,
-            WebQueryRunner liveRunner,
-            WebQueryRunner demoRunner,
+            WebQueryService webQueryService,
             String demoUserId,
-            GoogleTokenStore store)
+            GoogleTokenStore store,
+            PrincipalRegistry principals)
             throws IOException {
+        String traceId = UUID.randomUUID().toString();
+
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             sendBytes(ex, 405, "text/plain", "Use POST");
             return;
@@ -763,140 +790,103 @@ public final class DemoWebServer {
         boolean json = ct != null && ct.toLowerCase().startsWith("application/json");
         byte[] body = readBodyLimited(ex);
 
-        String sql;
-        Integer pageNumber = null;
-        String cursor = null;
-        Integer pageSizeReq = null;
-        Duration maxStaleness = null;
+        HttpQueryPayload payload;
         String connectorMode = "demo";
         String mockUserId = "";
-        if (json) {
-            try {
+        try {
+            if (json) {
                 JsonObject o = JsonParser.parseString(new String(body, StandardCharsets.UTF_8)).getAsJsonObject();
-                sql = o.get("sql").getAsString();
-                if (o.has("pageNumber") && !o.get("pageNumber").isJsonNull()) {
-                    pageNumber = o.get("pageNumber").getAsInt();
-                }
-                if (o.has("cursor") && !o.get("cursor").isJsonNull()) {
-                    cursor = o.get("cursor").getAsString();
-                }
-                if (o.has("pageSize") && !o.get("pageSize").isJsonNull()) {
-                    pageSizeReq = o.get("pageSize").getAsInt();
-                }
-                if (o.has("maxStaleness") && !o.get("maxStaleness").isJsonNull()) {
-                    maxStaleness = Duration.parse(o.get("maxStaleness").getAsString().trim());
-                }
+                payload = HttpQueryPayload.parseJson(o);
                 if (o.has("connectorMode") && !o.get("connectorMode").isJsonNull()) {
                     connectorMode = o.get("connectorMode").getAsString().trim();
                 }
                 if (o.has("mockUserId") && !o.get("mockUserId").isJsonNull()) {
                     mockUserId = o.get("mockUserId").getAsString().trim();
                 }
-            } catch (Exception e) {
-                errorJson(ex, "invalid JSON: " + e.getMessage());
-                return;
-            }
-        } else {
-            String raw = new String(body, StandardCharsets.UTF_8);
-            Map<String, String> form = parseForm(raw);
-            sql = form.get("sql");
-            cursor = form.get("cursor");
-            String pn = form.get("pageNumber");
-            if (pn != null && !pn.isBlank()) {
-                try {
-                    pageNumber = Integer.parseInt(pn.trim());
-                } catch (NumberFormatException e) {
-                    errorJson(ex, "invalid pageNumber");
-                    return;
+            } else {
+                String raw = new String(body, StandardCharsets.UTF_8);
+                Map<String, String> form = parseForm(raw);
+                payload = HttpQueryPayload.parseForm(form);
+                String cm = form.get("connectorMode");
+                if (cm != null && !cm.isBlank()) {
+                    connectorMode = cm.trim();
+                }
+                String mu = form.get("mockUserId");
+                if (mu != null) {
+                    mockUserId = mu.trim();
                 }
             }
-            String psForm = form.get("pageSize");
-            if (psForm != null && !psForm.isBlank()) {
-                try {
-                    pageSizeReq = Integer.parseInt(psForm.trim());
-                } catch (NumberFormatException e) {
-                    errorJson(ex, "invalid pageSize");
-                    return;
-                }
-            }
-            String ms = form.get("maxStaleness");
-            if (ms != null && !ms.isBlank()) {
-                maxStaleness = Duration.parse(ms.trim());
-            }
-            String cm = form.get("connectorMode");
-            if (cm != null && !cm.isBlank()) {
-                connectorMode = cm.trim();
-            }
-            String mu = form.get("mockUserId");
-            if (mu != null) {
-                mockUserId = mu.trim();
-            }
-        }
-        if (sql == null || sql.isBlank()) {
-            errorJson(ex, "missing sql");
+        } catch (RuntimeException e) {
+            ErrorResponder.writeFailure(
+                    ex,
+                    json,
+                    traceId,
+                    new ResponseContext.Outcome.Failure(
+                            ErrorCode.BAD_QUERY, "invalid payload: " + e.getMessage(), null, null));
             return;
         }
 
-        try {
-            Objects.requireNonNull(demoRunner, "demoRunner");
+        if (payload.sql() == null || payload.sql().isBlank()) {
+            ErrorResponder.writeFailure(
+                    ex,
+                    json,
+                    traceId,
+                    new ResponseContext.Outcome.Failure(ErrorCode.BAD_QUERY, "missing sql", null, null));
+            return;
+        }
+        if ("mock".equalsIgnoreCase(connectorMode)) {
+            ErrorResponder.writeFailure(
+                    ex,
+                    json,
+                    traceId,
+                    new ResponseContext.Outcome.Failure(
+                            ErrorCode.BAD_QUERY,
+                            "connectorMode \"mock\" is not available in the browser demo (use demo or live)",
+                            null,
+                            null));
+            return;
+        }
 
-            WebQueryRunner runner;
-            UserContext requestUser;
-            boolean needGoogle = false;
-            if ("mock".equalsIgnoreCase(connectorMode)) {
-                String err = "connectorMode \"mock\" is not available in the browser demo (use demo or live)";
-                if (json) {
-                    errorJson(ex, err);
-                } else {
-                    sendBytes(ex, 400, "text/html; charset=utf-8", "<pre>" + esc(err) + "</pre>");
-                }
-                return;
-            }
-            if ("demo".equalsIgnoreCase(connectorMode)) {
-                runner = demoRunner;
-                requestUser = mockUserId.isBlank() ? UserContext.anonymous() : new UserContext(mockUserId);
-            } else if ("live".equalsIgnoreCase(connectorMode)) {
-                if (liveRunner == null) {
-                    sendLiveStackUnavailable(ex, json);
-                    return;
-                }
-                runner = liveRunner;
-                requestUser = new UserContext(demoUserId);
-                needGoogle = true;
-            } else {
-                String err = "connectorMode must be \"demo\" or \"live\"";
-                if (json) {
-                    errorJson(ex, err);
-                } else {
-                    sendBytes(ex, 400, "text/html; charset=utf-8", "<pre>" + esc(err) + "</pre>");
-                }
-                return;
-            }
+        UserContext requestUser;
+        boolean needGoogle = false;
+        if ("demo".equalsIgnoreCase(connectorMode)) {
+            requestUser = mockUserId.isBlank() ? UserContext.anonymous() : new UserContext(mockUserId);
+        } else if ("live".equalsIgnoreCase(connectorMode)) {
+            requestUser = new UserContext(demoUserId);
+            needGoogle = true;
+        } else {
+            requestUser = UserContext.anonymous();
+            // Unknown modes fall through to WebQueryService.execute → BAD_QUERY.
+        }
 
-            if (needGoogle && store != null && missingGoogleAccount(store, demoUserId)) {
-                JsonObject hint = new JsonObject();
-                hint.addProperty("ok", false);
-                hint.addProperty(
-                        "error",
-                        "Connect Google first (/oauth/google/start). Live mode needs OAuth for Drive.");
-                if (json) {
-                    sendJson(ex, 401, hint);
-                } else {
-                    sendBytes(
-                            ex,
-                            401,
-                            "text/html; charset=utf-8",
-                            "<p>Connect Google first: <a href=\"/oauth/google/start\">OAuth</a></p>");
-                }
-                return;
-            }
-            QueryCacheScope cacheScope =
-                    "demo".equalsIgnoreCase(connectorMode)
-                            ? DemoPrincipalRegistry.cacheScope(mockUserId)
-                            : QueryCacheScope.from(requestUser);
-            JsonObject result =
-                    runner.run(sql, pageNumber, cursor, pageSizeReq, maxStaleness, cacheScope);
-            WebQueryTraceLogger.appendTrace(connectorMode, sql, result);
+        if (needGoogle && store != null && missingGoogleAccount(store, demoUserId)) {
+            ErrorResponder.writeFailure(
+                    ex,
+                    json,
+                    traceId,
+                    new ResponseContext.Outcome.Failure(
+                            ErrorCode.ENTITLEMENT_DENIED,
+                            "Connect Google first (/oauth/google/start). Live mode needs OAuth for Drive.",
+                            null,
+                            null));
+            return;
+        }
+
+        QueryCacheScope cacheScope =
+                "demo".equalsIgnoreCase(connectorMode)
+                        ? principals.cacheScopeFor(mockUserId)
+                        : QueryCacheScope.from(requestUser);
+        Principal principal = principals.lookup(requestUser);
+        String tenantId = principal.equals(Principal.anonymous()) ? null : cacheScope.tenantId();
+        RequestContext ctx =
+                new RequestContext(traceId, requestUser, cacheScope, tenantId, Instant.now());
+
+        ResponseContext rc = webQueryService.execute(connectorMode, ctx, payload.toRequest());
+
+        if (rc.outcome() instanceof ResponseContext.Outcome.Success success) {
+            JsonObject result = success.body();
+            WebQueryTraceLogger.appendTrace(traceId, connectorMode, payload.sql(), result);
+            ex.getResponseHeaders().add("X-Trace-Id", traceId);
             if (json) {
                 sendJson(ex, 200, result);
             } else {
@@ -909,19 +899,9 @@ public final class DemoWebServer {
                                 + esc(GSON.toJson(result))
                                 + "</pre><p><a href=\"/\">Back</a></p></body></html>");
             }
-        } catch (IllegalArgumentException e) {
-            if (json) {
-                errorJson(ex, e.getMessage());
-            } else {
-                sendBytes(ex, 400, "text/html; charset=utf-8", "<pre>" + esc(e.getMessage()) + "</pre>");
-            }
-        } catch (Exception e) {
-            String msg = esc(Objects.toString(e.getMessage(), e.getClass().getSimpleName()));
-            if (json) {
-                errorJson(ex, msg);
-            } else {
-                sendBytes(ex, 500, "text/html; charset=utf-8", "<pre>" + msg + "</pre>");
-            }
+        } else {
+            ErrorResponder.writeFailure(
+                    ex, json, traceId, (ResponseContext.Outcome.Failure) rc.outcome());
         }
     }
 
@@ -999,13 +979,6 @@ public final class DemoWebServer {
 
     private static void sendJson(HttpExchange ex, int code, JsonObject body) throws IOException {
         sendBytes(ex, code, "application/json; charset=utf-8", GSON.toJson(body));
-    }
-
-    private static void errorJson(HttpExchange ex, String message) throws IOException {
-        JsonObject o = new JsonObject();
-        o.addProperty("ok", false);
-        o.addProperty("error", message);
-        sendJson(ex, 400, o);
     }
 
     private static String esc(String s) {
