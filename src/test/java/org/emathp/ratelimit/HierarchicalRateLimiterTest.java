@@ -124,4 +124,39 @@ class HierarchicalRateLimiterTest {
         assertEquals(5, successes.get(), "burst capacity 5 on connector");
         assertEquals(threads - 5, connectorDenials.get());
     }
+
+    @Test
+    void serviceLayerConfig_skipsConnectorScope() {
+        // forService() leaves connector null — only tenant + user buckets are checked.
+        FakeNanoClock clock = new FakeNanoClock();
+        HierarchicalRateLimiterConfig cfg =
+                HierarchicalRateLimiterConfig.forService(
+                        new TokenBucketConfig(10.0, 10.0), // tenant
+                        new TokenBucketConfig(10.0, 1.0)); // user, burst=1
+        HierarchicalRateLimiter limiter = new HierarchicalRateLimiter(clock, cfg);
+        RequestContext ctx = new RequestContext("t1", "u1", "google-drive");
+
+        // First call succeeds (user burst=1).
+        assertTrue(limiter.tryAcquire(ctx).allowed());
+        // Second call denied — but at USER scope, not CONNECTOR, because connector bucket is
+        // null and therefore not checked.
+        RateLimitResult denied = limiter.tryAcquire(ctx);
+        assertFalse(denied.allowed());
+        assertEquals(RateLimitScope.USER, denied.violatedScope());
+    }
+
+    @Test
+    void connectorLayerConfig_skipsTenantAndUserScopes() {
+        // forConnector() leaves tenant + user null — only the connector bucket is checked.
+        FakeNanoClock clock = new FakeNanoClock();
+        HierarchicalRateLimiterConfig cfg =
+                HierarchicalRateLimiterConfig.forConnector(new TokenBucketConfig(10.0, 1.0));
+        HierarchicalRateLimiter limiter = new HierarchicalRateLimiter(clock, cfg);
+        RequestContext ctx = new RequestContext("t1", "u1", "google-drive");
+
+        assertTrue(limiter.tryAcquire(ctx).allowed());
+        RateLimitResult denied = limiter.tryAcquire(ctx);
+        assertFalse(denied.allowed());
+        assertEquals(RateLimitScope.CONNECTOR, denied.violatedScope());
+    }
 }

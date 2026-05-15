@@ -21,6 +21,8 @@ import org.emathp.query.FederatedQueryRequest;
 import org.emathp.query.FederatedQueryService;
 import org.emathp.query.RequestContext;
 import org.emathp.query.ResponseContext;
+import org.emathp.ratelimit.RateLimitPolicy;
+import org.emathp.ratelimit.RateLimitResult;
 import org.emathp.ratelimit.RateLimitedException;
 import org.emathp.snapshot.api.SnapshotQueryService;
 import org.emathp.snapshot.model.SnapshotEnvironment;
@@ -29,12 +31,18 @@ import org.emathp.snapshot.model.SnapshotEnvironment;
  * Default {@link FederatedQueryService}: parses SQL, delegates to {@link UnifiedSnapshotWebRunner},
  * and translates any boundary exception into a {@link ResponseContext.Outcome.Failure} so the HTTP
  * layer sees a uniform shape.
+ *
+ * <p>This is the <strong>service-layer</strong> rate-limit gate: every request — including cache
+ * hits — debits user + tenant buckets at entry, before any work. Honors Ema's own SLO and
+ * per-user fairness independent of whether the request reaches an upstream provider. The
+ * connector-layer rate limit (upstream protection) sits separately inside the engine page loop.
  */
 public final class DefaultFederatedQueryService implements FederatedQueryService {
 
     private final SQLParserService parser;
     private final UnifiedSnapshotWebRunner coordinator;
     private final UserContext constructionUser;
+    private final RateLimitPolicy serviceLimiter;
 
     public DefaultFederatedQueryService(
             SQLParserService parser,
@@ -48,8 +56,28 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
             SnapshotEnvironment snapshotEnv,
             int logicalPageSize,
             PrincipalRegistry principals) {
+        this(parser, planner, executor, joinExecutor, connectors, connectorsByName,
+                constructionUser, snapshotQueryService, snapshotEnv, logicalPageSize, principals,
+                RateLimitPolicy.UNLIMITED);
+    }
+
+    public DefaultFederatedQueryService(
+            SQLParserService parser,
+            Planner planner,
+            QueryExecutor executor,
+            JoinExecutor joinExecutor,
+            List<Connector> connectors,
+            Map<String, Connector> connectorsByName,
+            UserContext constructionUser,
+            SnapshotQueryService snapshotQueryService,
+            SnapshotEnvironment snapshotEnv,
+            int logicalPageSize,
+            PrincipalRegistry principals,
+            RateLimitPolicy serviceLimiter) {
         this.parser = parser;
         this.constructionUser = constructionUser;
+        this.serviceLimiter =
+                serviceLimiter == null ? RateLimitPolicy.UNLIMITED : serviceLimiter;
         this.coordinator =
                 new UnifiedSnapshotWebRunner(
                         planner,
@@ -68,6 +96,23 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
         Objects.requireNonNull(request, "request");
         long t0 = System.nanoTime();
         try {
+            // Service-layer rate limit: debit user + tenant buckets BEFORE parsing or touching
+            // the snapshot. Cache hits don't escape this check — every request consumes Ema's
+            // own SLO budget. Anon callers (no tenantId) bypass.
+            if (!ctx.isAnonymous()) {
+                RateLimitResult sr =
+                        serviceLimiter.tryAcquire(
+                                new org.emathp.ratelimit.RequestContext(
+                                        ctx.tenantId(),
+                                        ctx.user().userId(),
+                                        // service-layer keys don't depend on connector — pass a
+                                        // sentinel so RequestContext's non-blank validation is
+                                        // satisfied.
+                                        "_service_"));
+                if (!sr.allowed()) {
+                    throw new RateLimitedException(sr);
+                }
+            }
             ParsedQuery parsed = parser.parse(request.sql());
             JsonObject body = coordinator.runParsed(ctx, parsed, request);
             long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;

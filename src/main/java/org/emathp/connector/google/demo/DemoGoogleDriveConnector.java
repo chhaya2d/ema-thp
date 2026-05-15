@@ -58,7 +58,7 @@ public final class DemoGoogleDriveConnector implements Connector {
      */
     @Override
     public DataScope dataScope() {
-        return DataScope.TENANT_ROLE;
+        return DataScope.ROLE;
     }
 
     @Override

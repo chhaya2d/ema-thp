@@ -32,37 +32,45 @@ public final class HierarchicalRateLimiter implements RateLimitPolicy {
     }
 
     /**
-     * @return full {@link RateLimitResult}; use {@link #allow(RequestContext)} when only a boolean
-     *     is needed.
+     * Acquires one token from each configured scope; scopes with {@code null} config are skipped
+     * (supports the two-layer model — see {@link HierarchicalRateLimiterConfig}).
+     *
+     * @return full {@link RateLimitResult}; use {@link #allow(RequestContext)} when only a
+     *     boolean is needed.
      */
     @Override
     public RateLimitResult tryAcquire(RequestContext ctx) {
         Objects.requireNonNull(ctx, "ctx");
-
-        TokenBucket connector =
-                bucket(RateLimitKey.connector(ctx.connectorName()), config.connector());
-        TokenBucket tenant = bucket(RateLimitKey.tenant(ctx.tenantId()), config.tenant());
-        TokenBucket user = bucket(RateLimitKey.user(ctx.tenantId(), ctx.userId()), config.user());
-
         List<TokenBucket> committed = new ArrayList<>(3);
 
-        TokenBucket.TryOutcome c = connector.tryConsumeOne();
-        if (!c.allowed()) {
-            return RateLimitResult.denied(c.retryAfterMs(), RateLimitScope.CONNECTOR);
+        if (config.connector() != null) {
+            TokenBucket connector =
+                    bucket(RateLimitKey.connector(ctx.connectorName()), config.connector());
+            TokenBucket.TryOutcome c = connector.tryConsumeOne();
+            if (!c.allowed()) {
+                return RateLimitResult.denied(c.retryAfterMs(), RateLimitScope.CONNECTOR);
+            }
+            committed.add(connector);
         }
-        committed.add(connector);
 
-        TokenBucket.TryOutcome t = tenant.tryConsumeOne();
-        if (!t.allowed()) {
-            rollback(committed);
-            return RateLimitResult.denied(t.retryAfterMs(), RateLimitScope.TENANT);
+        if (config.tenant() != null) {
+            TokenBucket tenant = bucket(RateLimitKey.tenant(ctx.tenantId()), config.tenant());
+            TokenBucket.TryOutcome t = tenant.tryConsumeOne();
+            if (!t.allowed()) {
+                rollback(committed);
+                return RateLimitResult.denied(t.retryAfterMs(), RateLimitScope.TENANT);
+            }
+            committed.add(tenant);
         }
-        committed.add(tenant);
 
-        TokenBucket.TryOutcome u = user.tryConsumeOne();
-        if (!u.allowed()) {
-            rollback(committed);
-            return RateLimitResult.denied(u.retryAfterMs(), RateLimitScope.USER);
+        if (config.user() != null) {
+            TokenBucket user =
+                    bucket(RateLimitKey.user(ctx.tenantId(), ctx.userId()), config.user());
+            TokenBucket.TryOutcome u = user.tryConsumeOne();
+            if (!u.allowed()) {
+                rollback(committed);
+                return RateLimitResult.denied(u.retryAfterMs(), RateLimitScope.USER);
+            }
         }
         return RateLimitResult.ok();
     }

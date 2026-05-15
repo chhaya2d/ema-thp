@@ -53,7 +53,7 @@ public final class DemoNotionConnector implements Connector {
     /** Demo fixture is shared across users; tenant/role-scoped for cache sharing. */
     @Override
     public DataScope dataScope() {
-        return DataScope.TENANT_ROLE;
+        return DataScope.ROLE;
     }
 
     @Override

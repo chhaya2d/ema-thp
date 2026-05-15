@@ -82,16 +82,25 @@ public final class DemoWebServer {
             TokenEncryptor encryptor) {}
 
     /**
-     * Demo / live default rate-limit shape: per-connector 30 rps (burst 60), per-tenant 10 rps
-     * (burst 20), per-user 5 rps (burst 10). Anon callers bypass the limiter entirely (see
-     * {@link UnifiedSnapshotWebRunner}'s tenantId resolver). Per-user / per-tier overrides are a
-     * follow-up — today the same shape applies to every (tenant, user, connector).
+     * Service-layer rate limit (user + tenant) — debits every request including cache hits.
+     * Honors Ema's per-user fairness and per-tenant SLO. Tenant 30 rps (burst 60); user 5 rps
+     * (burst 10) is the tightest, so per-user fairness trips first in burst tests. Anon callers
+     * bypass entirely.
      */
-    private static HierarchicalRateLimiterConfig demoRateLimitConfig() {
-        return new HierarchicalRateLimiterConfig(
-                new TokenBucketConfig(30.0, 60.0),
-                new TokenBucketConfig(10.0, 20.0),
-                new TokenBucketConfig(5.0, 10.0));
+    private static HierarchicalRateLimiterConfig demoServiceRateLimitConfig() {
+        return HierarchicalRateLimiterConfig.forService(
+                new TokenBucketConfig(30.0, 60.0),  // tenant
+                new TokenBucketConfig(5.0, 10.0));  // user
+    }
+
+    /**
+     * Connector-layer rate limit — debits only when a provider call is actually made (cache
+     * miss). Protects upstream APIs from being hammered. Generous default (30 rps / burst 60);
+     * production would set per-connector based on each upstream's published rate (e.g. Notion 3
+     * rps, Google Drive ~100 rps).
+     */
+    private static HierarchicalRateLimiterConfig demoConnectorRateLimitConfig() {
+        return HierarchicalRateLimiterConfig.forConnector(new TokenBucketConfig(30.0, 60.0));
     }
 
     private static boolean liveConnectorEnvLooksComplete() {
@@ -114,7 +123,8 @@ public final class DemoWebServer {
             WebEnv env,
             SQLParserService parser,
             PrincipalRegistry principals,
-            RateLimitPolicy rateLimitPolicy) {
+            RateLimitPolicy connectorLimiter,
+            RateLimitPolicy serviceLimiter) {
         if (!liveConnectorEnvLooksComplete()) {
             return null;
         }
@@ -132,7 +142,7 @@ public final class DemoWebServer {
             MockConnectorDevSettings mockDev = MockConnectorDevSettings.compiled();
             connectorsByName.put("notion", new NotionConnector(mockDev));
             Planner planner = new Planner();
-            QueryExecutor executor = new QueryExecutor(rateLimitPolicy);
+            QueryExecutor executor = new QueryExecutor(connectorLimiter);
             JoinExecutor joinExecutor = new JoinExecutor(planner, executor);
             UserContext user = new UserContext(env.demoUserId());
             SnapshotQueryService snapshots =
@@ -154,7 +164,8 @@ public final class DemoWebServer {
                             snapshots,
                             SnapshotEnvironment.PROD,
                             WebDefaults.UI_QUERY_PAGE_SIZE,
-                            principals);
+                            principals,
+                            serviceLimiter);
             return new LiveWebStack(liveService, store, oauth, encryptor);
         } catch (Exception e) {
             System.err.println("Live Google stack init failed (demo fixtures still work): " + e.getMessage());
@@ -526,13 +537,19 @@ public final class DemoWebServer {
     private static void runHybridDemoServer(WebEnv env) throws Exception {
         SQLParserService parser = new SQLParserService();
         PrincipalRegistry principals = new DemoPrincipalRegistry();
-        RateLimitPolicy rateLimitPolicy = new HierarchicalRateLimiter(demoRateLimitConfig());
-        LiveWebStack live = tryCreateLiveWebStack(env, parser, principals, rateLimitPolicy);
+        // Two-layer rate limit: service (user+tenant) fires at every request including cache
+        // hits; connector fires only on outbound provider calls. Each layer has its own bucket
+        // state so they can't double-debit a single request.
+        RateLimitPolicy serviceLimiter = new HierarchicalRateLimiter(demoServiceRateLimitConfig());
+        RateLimitPolicy connectorLimiter =
+                new HierarchicalRateLimiter(demoConnectorRateLimitConfig());
+        LiveWebStack live =
+                tryCreateLiveWebStack(env, parser, principals, connectorLimiter, serviceLimiter);
         FederatedQueryService liveService = live != null ? live.service() : null;
         GoogleTokenStore store = live != null ? live.store() : null;
 
         Planner demoPlanner = new Planner(true);
-        QueryExecutor demoExecutor = new QueryExecutor(rateLimitPolicy);
+        QueryExecutor demoExecutor = new QueryExecutor(connectorLimiter);
         JoinExecutor demoJoinExecutor = new JoinExecutor(demoPlanner, demoExecutor);
         SnapshotQueryService demoSnapshots =
                 new SnapshotQueryService(
@@ -556,7 +573,8 @@ public final class DemoWebServer {
                         demoSnapshots,
                         SnapshotEnvironment.TEST,
                         WebDefaults.UI_QUERY_PAGE_SIZE_DEMO,
-                        principals);
+                        principals,
+                        serviceLimiter);
 
         WebQueryService webQueryService = new WebQueryService(demoService, liveService);
         boolean liveConfigured = live != null;

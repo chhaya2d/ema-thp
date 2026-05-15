@@ -362,31 +362,24 @@ class ShowcaseTest {
     }
 
     // ---------------------------------------------------------------------------------------
-    // 8. Rate limit — 429 envelope with Retry-After
+    // 8. Connector-layer rate limit — upstream provider quota protection
     // ---------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("8. Rate limit: bursting past the per-user bucket returns Outcome.Failure(RATE_LIMIT_EXHAUSTED, retryAfterMs>0, scope=USER)")
-    void rate_limit_429_with_retry_after_envelope(@TempDir Path snapshotBase) {
-        // Tight buckets that won't refill during the test. Refill rate 0.01/s = 1 token per 100s,
-        // so no meaningful recovery in the test's ~few-second lifetime. Burst 1 = first call OK,
-        // every subsequent call denied at the USER bucket.
-        //
-        // Connector + tenant left high so the USER bucket (the tightest) is what trips. Order of
-        // check in HierarchicalRateLimiter is connector → tenant → user, so we report the first
-        // bucket that denies. With connector + tenant high, USER trips first.
-        HierarchicalRateLimiterConfig tight =
-                new HierarchicalRateLimiterConfig(
-                        new TokenBucketConfig(100.0, 200.0), // connector
-                        new TokenBucketConfig(100.0, 200.0), // tenant
-                        new TokenBucketConfig(0.01, 1.0));   // user — tight, no refill during test
-        FederatedQueryService service = newService(snapshotBase, new HierarchicalRateLimiter(tight));
+    @DisplayName("8. Connector-layer rate limit: bursting fresh provider calls trips CONNECTOR bucket (upstream protection)")
+    void connector_rate_limit_trips_on_provider_calls(@TempDir Path snapshotBase) {
+        // Connector-layer limiter sits at the engine page loop, fires only when a provider call
+        // actually happens (cache miss). Tight connector bucket so bursts of fresh requests trip.
+        HierarchicalRateLimiterConfig tightConnector =
+                HierarchicalRateLimiterConfig.forConnector(
+                        new TokenBucketConfig(0.01, 1.0)); // 1 burst, ~no refill
+        FederatedQueryService service =
+                newService(snapshotBase, new HierarchicalRateLimiter(tightConnector));
 
         RequestContext ctx = aliceCtx();
-        // Full pushdown on Google → exactly one provider call per query → one rate-limit tick.
-        // Full pushdown IS cached (since the cache-uniformity change), so we pass maxStaleness=
-        // Duration.ZERO to force a fresh fetch every call — that's the natural client gesture
-        // for "I want fresh data" and it lets the rate limiter actually fire on each call.
+        // Same query each call, but maxStaleness=Duration.ZERO forces a fresh fetch every time,
+        // bypassing the cache. So each call enters the page loop and debits the connector
+        // bucket. First call succeeds (burst=1); subsequent calls denied at CONNECTOR scope.
         FederatedQueryRequest req =
                 new FederatedQueryRequest(
                         "SELECT title, updatedAt FROM google WHERE updatedAt > '2020-01-01'"
@@ -411,8 +404,54 @@ class ShowcaseTest {
         assertEquals(ErrorCode.RATE_LIMIT_EXHAUSTED, firstFailure.code());
         assertTrue(firstFailure.retryAfterMs() != null && firstFailure.retryAfterMs() > 0L,
                 "retryAfterMs must be present and positive for client backoff");
-        assertEquals("USER", firstFailure.violatedScope(),
-                "USER bucket (the tightest of the three) trips first");
+        assertEquals("CONNECTOR", firstFailure.violatedScope(),
+                "CONNECTOR bucket (the only one configured at this layer) trips");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 12. Service-layer rate limit — Ema honors its own SLO even on cache hits
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("12. Service-layer rate limit: bursting CACHED requests as one user still trips USER bucket (Ema's own SLO)")
+    void service_rate_limit_trips_on_cache_hits(@TempDir Path snapshotBase) throws Exception {
+        // Service-layer limiter sits at FederatedQueryService.execute entry. Tight user bucket
+        // so the 2nd request denies — regardless of cache hit/miss. This proves Ema's per-user
+        // fairness is honored even when the request never reaches an upstream provider.
+        HierarchicalRateLimiterConfig tightService =
+                HierarchicalRateLimiterConfig.forService(
+                        new TokenBucketConfig(10.0, 20.0), // tenant — generous
+                        new TokenBucketConfig(0.01, 1.0)); // user — burst=1, no refill
+        FederatedQueryService service =
+                newServiceWithServiceLimiter(
+                        snapshotBase,
+                        RateLimitPolicy.UNLIMITED, // connector layer UNLIMITED
+                        new HierarchicalRateLimiter(tightService));
+
+        RequestContext ctx = aliceCtx();
+        // Identical query each call — second+ calls would be cache hits (cache exists from #1).
+        // The service limiter fires BEFORE the cache check, so cache hits don't bypass the
+        // limiter — that's the whole point of the service layer.
+        FederatedQueryRequest req =
+                new FederatedQueryRequest(
+                        "SELECT title, updatedAt FROM notion WHERE updatedAt > '2020-01-01'"
+                                + " ORDER BY updatedAt DESC LIMIT 5",
+                        null, null, null, null);
+
+        // Call 1: service-layer OK (burst=1), executes, caches result.
+        ResponseContext first = service.execute(ctx, req);
+        assertTrue(first.isSuccess(), "first call must succeed");
+
+        // Call 2: service-layer DENIES at USER scope — even though this would have been a cache
+        // hit. The request never reaches the snapshot/engine layer.
+        ResponseContext second = service.execute(ctx, req);
+        assertFalse(second.isSuccess(), "second call must be denied at service layer");
+        ResponseContext.Outcome.Failure f = (ResponseContext.Outcome.Failure) second.outcome();
+        assertEquals(ErrorCode.RATE_LIMIT_EXHAUSTED, f.code());
+        assertEquals("USER", f.violatedScope(),
+                "service-layer denial reports USER scope (the tightest configured bucket)");
+        assertEquals("EXHAUSTED", second.rateLimitStatus());
+        assertTrue(f.retryAfterMs() != null && f.retryAfterMs() > 0L);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -486,17 +525,34 @@ class ShowcaseTest {
     // Helpers
     // ---------------------------------------------------------------------------------------
 
-    private FederatedQueryService newService(Path snapshotBase, RateLimitPolicy rateLimit) {
+    private FederatedQueryService newService(Path snapshotBase, RateLimitPolicy connectorLimit) {
         Map<String, Connector> connectors = new LinkedHashMap<>();
         connectors.put("google", new DemoGoogleDriveConnector());
         connectors.put("notion", new DemoNotionConnector());
-        return newServiceWithConnectors(snapshotBase, rateLimit, connectors);
+        return newServiceWithConnectors(snapshotBase, connectorLimit, connectors);
     }
 
     private FederatedQueryService newServiceWithConnectors(
-            Path snapshotBase, RateLimitPolicy rateLimit, Map<String, Connector> connectors) {
+            Path snapshotBase, RateLimitPolicy connectorLimit, Map<String, Connector> connectors) {
+        return newServiceFull(snapshotBase, connectorLimit, RateLimitPolicy.UNLIMITED, connectors);
+    }
+
+    /** Builds a service with both limiters explicit — for the service-layer test (#12). */
+    private FederatedQueryService newServiceWithServiceLimiter(
+            Path snapshotBase, RateLimitPolicy connectorLimit, RateLimitPolicy serviceLimit) {
+        Map<String, Connector> connectors = new LinkedHashMap<>();
+        connectors.put("google", new DemoGoogleDriveConnector());
+        connectors.put("notion", new DemoNotionConnector());
+        return newServiceFull(snapshotBase, connectorLimit, serviceLimit, connectors);
+    }
+
+    private FederatedQueryService newServiceFull(
+            Path snapshotBase,
+            RateLimitPolicy connectorLimit,
+            RateLimitPolicy serviceLimit,
+            Map<String, Connector> connectors) {
         Planner planner = new Planner(true);
-        QueryExecutor executor = new QueryExecutor(rateLimit);
+        QueryExecutor executor = new QueryExecutor(connectorLimit);
         JoinExecutor joinExecutor = new JoinExecutor(planner, executor);
         SnapshotQueryService snapshots =
                 new SnapshotQueryService(
@@ -516,7 +572,8 @@ class ShowcaseTest {
                 snapshots,
                 SnapshotEnvironment.TEST,
                 2,
-                principals);
+                principals,
+                serviceLimit);
     }
 
     private RequestContext ctxFor(String userId) {

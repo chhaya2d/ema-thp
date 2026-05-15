@@ -13,7 +13,7 @@ package org.emathp.connector;
  * <ul>
  *   <li>{@link #USER} — each caller sees private data (personal Drive, Gmail, Notion workspace,
  *       Slack DMs). Cache must include {@code userId}.</li>
- *   <li>{@link #TENANT_ROLE} — tenant-wide data filtered by role (Salesforce with role hierarchy,
+ *   <li>{@link #ROLE} — tenant-wide data filtered by role (Salesforce with role hierarchy,
  *       Zendesk tickets, HRIS, Jira issues, GitHub org repos). Cache shared across users with the
  *       same {@code (tenant, role)}.</li>
  *   <li>{@link #TENANT} — tenant-wide data with no role filtering. Cache shared across all users
@@ -23,7 +23,7 @@ package org.emathp.connector;
  */
 public enum DataScope {
     USER,
-    TENANT_ROLE,
+    ROLE,
     TENANT,
     PUBLIC
 }

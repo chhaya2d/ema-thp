@@ -52,12 +52,26 @@ Notion follows the same pattern: **mock** (`notion/mock`) and **demo** (`notion/
 
 ## Rate limiting
 
-- **`RateLimitPolicy`** (`ratelimit/RateLimitPolicy.java`) is the engine-facing interface — `tryAcquire(RequestContext) -> RateLimitResult`. Implementations: **`HierarchicalRateLimiter`** (real, three-axis token-bucket) and **`RateLimitPolicy.UNLIMITED`** (no-op, used by every snapshot / pagination test).
-- **Hierarchical AND-semantics**: each provider call must pass **connector**, **tenant**, and **user** token buckets. A denial in any bucket fails the request; earlier buckets are refunded (best-effort) so they don't leak quota.
-- **Where the check fires**: inside **`QueryExecutor.runPageLoop`**, **before each `connector.search(...)`** call. A single SQL query that does N page fetches debits N times per (connector, tenant, user). A denial throws **`RateLimitedException`** and unwinds the whole `/api/query` request — no partial rows surface.
-- **Anon short-circuit**: when `UserContext.userId()` is null/blank, or **`PrincipalRegistry.lookup`** returns `Principal.anonymous()`, **`UnifiedSnapshotWebRunner`** passes `tenantId = null` down through `SidePageRequest` / `FullMaterializationCoordinator`; the page loop sees a blank tenant and skips the limiter entirely. CLI demos and snapshot tests therefore run unlimited.
-- **Demo config** lives in **`DemoWebServer.demoRateLimitConfig()`** — uniform shape today (connector 30 rps / burst 60, tenant 10 / 20, user 5 / 10). Per-user / per-tier overrides will come via a per-key config resolver in a follow-up.
-- **Dedicated limiter tests** sit in **`src/test/java/org/emathp/ratelimit/`** (token bucket + hierarchical). Engine / snapshot / web tests inject `UNLIMITED` so bucket state never affects them.
+Two-layer model. The buckets sit at different points in the request flow and protect different things:
+
+| Layer | Where it fires | Buckets configured | Purpose |
+|---|---|---|---|
+| **Service** | `DefaultFederatedQueryService.execute()` entry, before SQL parse | **user + tenant** (connector skipped) | Ema's own SLO + per-user fairness. Fires on *every* request including cache hits. |
+| **Connector** | `QueryExecutor.runPageLoop`, before each `connector.search(...)` | **connector** (user + tenant skipped) | Upstream provider quota protection. Fires only on actual provider calls. |
+
+- **`RateLimitPolicy`** (`ratelimit/RateLimitPolicy.java`) — engine-facing interface: `tryAcquire(RequestContext) → RateLimitResult`. Implementations: **`HierarchicalRateLimiter`** (real, configurable token-bucket per scope) and **`RateLimitPolicy.UNLIMITED`** (no-op, used by tests that don't exercise rate limiting).
+- **Nullable scopes**: `HierarchicalRateLimiterConfig` accepts `null` for any of `(connector, tenant, user)` — the limiter skips null-configured scopes. The two factory methods `forService(tenant, user)` and `forConnector(connector)` build the two layers' configs.
+- **AND semantics per layer**: at the connector layer, just one bucket (connector); at the service layer, the request must pass *both* user and tenant. Denial in any bucket fails the request; earlier buckets refunded (best-effort).
+- **Cache hits still pay the service tax**: this is the key change from a single-layer model. A user hammering identical cached queries still gets throttled per-user — cache absorbs upstream load but the service layer protects Ema's own capacity.
+- **Anon short-circuit**: when `RequestContext.isAnonymous()` is true (no tenantId or no userId), both layers skip the check entirely. CLI demos and snapshot tests therefore run unlimited.
+- **Demo config** — `DemoWebServer.demoServiceRateLimitConfig()` and `demoConnectorRateLimitConfig()`:
+  - Service: **tenant 30 rps / burst 60**, **user 5 rps / burst 10** (user is the tightest — typical for SaaS pricing tiers).
+  - Connector: **30 rps / burst 60** shared across connectors. Production would per-connector this (Notion's real cap is 3 rps; Google Drive's is ~100 rps).
+- **End-to-end propagation**: a denial throws `RateLimitedException` → caught by `DefaultFederatedQueryService` → mapped to `ResponseContext.Outcome.Failure(RATE_LIMIT_EXHAUSTED, retryAfterMs, scope)` → `ErrorResponder` emits HTTP 429 with `Retry-After` header + uniform envelope JSON.
+- **Showcase tests** prove both layers fire:
+  - `ShowcaseTest #8` — connector-layer trip on a burst of cache-miss provider calls. Reports `scope=CONNECTOR`.
+  - `ShowcaseTest #12` — service-layer trip on a burst of cache-*hit* requests. Reports `scope=USER`. Proves Ema's own SLO is honored even when responses never reach the providers.
+- **Dedicated unit tests** in `src/test/java/org/emathp/ratelimit/` (token bucket + hierarchical) cover the limiter mechanics including scope-skipping when configured null.
 
 ## Metrics (`/metrics`) and k6 load test
 
