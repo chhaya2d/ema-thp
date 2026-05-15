@@ -8,6 +8,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import org.emathp.authz.TagAccessPolicy;
 import org.emathp.connector.Connector;
 import org.emathp.engine.QueryExecutor;
@@ -34,6 +37,15 @@ import org.emathp.snapshot.ports.SnapshotStore;
 public final class SingleSourceSidePipeline {
 
     private SingleSourceSidePipeline() {}
+
+    /**
+     * In-flight cache fills, keyed by connector directory. The first thread to miss for a given
+     * {@code connectorDir} installs a {@link CompletableFuture} here and runs the fetch + write;
+     * other threads that miss while it's running find the same future and await its result. This
+     * collapses thundering-herd misses into a single provider call + single write.
+     */
+    private static final ConcurrentHashMap<Path, CompletableFuture<SidePageResult>> inFlight =
+            new ConcurrentHashMap<>();
 
     public static SidePageResult execute(
             SidePageRequest request,
@@ -88,8 +100,87 @@ public final class SingleSourceSidePipeline {
                         m,
                         connectorDir);
             }
-            Metrics.SNAPSHOT_CACHE_MISSES.inc(connector.source());
+            // Don't bump miss counter here — we don't yet know if we're the thread that will
+            // actually fetch + write. Concurrent missers collapse onto one in-flight future
+            // (see singleFlightFetchAndWrite); only the winner is a true miss, waiters are hits.
         }
+
+        // Single-flight: when this side persists, exactly one thread fetches + writes for a
+        // given connectorDir; concurrent missers wait on the same future and reuse its result.
+        // Without persistence nothing is written, so there's no shared resource to contend over.
+        if (persistThisSide) {
+            return singleFlightFetchAndWrite(
+                    request, executor, store, plan, connectorDir, now, defaultWriteTtl);
+        }
+        // Non-persist path: no cache to share, every request goes to provider.
+        Metrics.SNAPSHOT_CACHE_MISSES.inc(connector.source());
+        return fetchAndMaybeWrite(
+                request, executor, store, plan, connectorDir, now, defaultWriteTtl);
+    }
+
+    private static SidePageResult singleFlightFetchAndWrite(
+            SidePageRequest request,
+            QueryExecutor executor,
+            SnapshotStore store,
+            PushdownPlan plan,
+            Path connectorDir,
+            Instant now,
+            Duration defaultWriteTtl)
+            throws IOException {
+        CompletableFuture<SidePageResult> mine = new CompletableFuture<>();
+        CompletableFuture<SidePageResult> winner = inFlight.computeIfAbsent(connectorDir, k -> mine);
+
+        if (winner == mine) {
+            // We installed the future — we're the one thread that actually fetches + writes.
+            // Concurrent missers for the same connectorDir get this same future and wait below.
+            Metrics.SNAPSHOT_CACHE_MISSES.inc(request.connector().source());
+            try {
+                SidePageResult result =
+                        fetchAndMaybeWrite(
+                                request, executor, store, plan, connectorDir, now, defaultWriteTtl);
+                mine.complete(result);
+            } catch (Throwable t) {
+                mine.completeExceptionally(t);
+            } finally {
+                // Remove only if still ours — guards against a future leak if some other thread
+                // somehow installed a fresh slot (it can't today, but the contract is "remove
+                // only what I installed").
+                inFlight.remove(connectorDir, mine);
+            }
+        } else {
+            // Waiter: the winner is doing the fetch + write; we'll read the result via the
+            // future. From the caller's perspective this is a cache hit — no provider call,
+            // no disk write.
+            Metrics.SNAPSHOT_CACHE_HITS.inc(request.connector().source());
+        }
+
+        try {
+            return winner.get();
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof IOException ioe) throw ioe;
+            if (cause instanceof RuntimeException re) throw re;
+            if (cause instanceof Error err) throw err;
+            throw new IOException(cause);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted waiting for cache fill", e);
+        }
+    }
+
+    private static SidePageResult fetchAndMaybeWrite(
+            SidePageRequest request,
+            QueryExecutor executor,
+            SnapshotStore store,
+            PushdownPlan plan,
+            Path connectorDir,
+            Instant now,
+            Duration defaultWriteTtl)
+            throws IOException {
+        RequestContext ctx = request.ctx();
+        Connector connector = request.connector();
+        Query plannerQuery = request.plannerQuery();
+        Duration maxStaleness = request.maxStaleness();
 
         TagAccessPolicy tagPolicy =
                 request.tagPolicy() == null ? TagAccessPolicy.unrestricted() : request.tagPolicy();
