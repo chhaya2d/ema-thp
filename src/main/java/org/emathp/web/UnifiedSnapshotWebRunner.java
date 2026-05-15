@@ -336,7 +336,8 @@ final class UnifiedSnapshotWebRunner {
                                 queryRoot,
                                 maxStaleness,
                                 SnapshotMaterializationPolicy.persistConnectorSideChunks(plan),
-                                tagPolicy));
+                                tagPolicy,
+                                plan));
 
         QueryExecutor.ExecutionResult exec = out.execution();
 

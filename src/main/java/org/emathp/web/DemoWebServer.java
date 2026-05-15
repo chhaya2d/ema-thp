@@ -578,11 +578,14 @@ public final class DemoWebServer {
 
         WebQueryService webQueryService = new WebQueryService(demoService, liveService);
         boolean liveConfigured = live != null;
+        // Backlog 200 — generous accept-queue so short bursts above accept-rate don't
+        // socket-reject. Default (0) maps to system default (~50 on Windows) which we observed
+        // hitting under sustained 100 RPS k6 load.
         HttpServer http =
                 HttpServer.create(
                         new InetSocketAddress(
                                 java.net.InetAddress.getByName(WebDefaults.HTTP_BIND_ADDRESS), env.webPort()),
-                        0);
+                        200);
         http.createContext("/", exchange -> handleRoot(exchange, env, liveConfigured));
         http.createContext("/health", exchange -> sendBytes(exchange, 200, "text/plain", "ok"));
         http.createContext("/metrics", DemoWebServer::handleMetrics);
@@ -605,7 +608,11 @@ public final class DemoWebServer {
                                 store,
                                 principals));
 
-        http.setExecutor(null);
+        // Fixed thread pool — default (null) is synchronous (single thread), which serializes
+        // every request behind the JDK's accept loop. 16-way concurrency processes cache hits in
+        // parallel without saturating; per-request work is mostly I/O (snapshot read) + cheap
+        // CPU (planner / tag filter).
+        http.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(16));
         http.start();
         System.out.println("Demo web UI: http://localhost:" + env.webPort() + "/");
         if (liveConfigured) {

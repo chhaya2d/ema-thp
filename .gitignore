@@ -22,3 +22,7 @@ PR_DESCRIPTION.generated.md
 
 # Web query trace (DemoWebServer)
 logs/
+
+# Snapshot artifacts written by gradlew run --args web and the snapshot CLI demo.
+# Tests use @TempDir; the demo server writes here and leaves chunks after exit.
+data/

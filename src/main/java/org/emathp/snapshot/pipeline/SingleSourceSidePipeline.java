@@ -51,7 +51,9 @@ public final class SingleSourceSidePipeline {
         Duration maxStaleness = request.maxStaleness();
         Instant now = clock.now();
 
-        PushdownPlan plan = planner.plan(connector, plannerQuery);
+        // Reuse the caller's plan when provided; the web runner already computes it for the
+        // response JSON shape, so re-planning here would double the work for no benefit.
+        PushdownPlan plan = request.plan() != null ? request.plan() : planner.plan(connector, plannerQuery);
         Path connectorDir = queryRoot.resolve(SnapshotPaths.safeConnectorDirSegment(connector.source()));
         Files.createDirectories(queryRoot);
 
