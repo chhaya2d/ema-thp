@@ -833,21 +833,21 @@ public final class DemoWebServer {
             GoogleTokenStore store,
             PrincipalRegistry principals)
             throws IOException {
-        String traceId = UUID.randomUUID().toString();
-
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             sendBytes(ex, 405, "text/plain", "Use POST");
             return;
         }
-        String ct = ex.getRequestHeaders().getFirst("Content-Type");
-        boolean json = ct != null && ct.toLowerCase().startsWith("application/json");
+
+        // All HTTP header parsing lives in HttpEnvelope. Body parsing stays inline
+        // because it depends on demo-specific fields (connectorMode, mockUserId).
+        HttpEnvelope.RequestHeaders reqHeaders = HttpEnvelope.parse(ex);
         byte[] body = readBodyLimited(ex);
 
         HttpQueryPayload payload;
         String connectorMode = "demo";
         String mockUserId = "";
         try {
-            if (json) {
+            if (reqHeaders.wantsJson()) {
                 JsonObject o = JsonParser.parseString(new String(body, StandardCharsets.UTF_8)).getAsJsonObject();
                 payload = HttpQueryPayload.parseJson(o);
                 if (o.has("connectorMode") && !o.get("connectorMode").isJsonNull()) {
@@ -870,28 +870,28 @@ public final class DemoWebServer {
                 }
             }
         } catch (RuntimeException e) {
-            ErrorResponder.writeFailure(
+            HttpEnvelope.writeFailure(
                     ex,
-                    json,
-                    traceId,
+                    reqHeaders,
+                    null,   // no RequestContext yet — parse failed before identity resolution
                     new ResponseContext.Outcome.Failure(
                             ErrorCode.BAD_QUERY, "invalid payload: " + e.getMessage(), null, null));
             return;
         }
 
         if (payload.sql() == null || payload.sql().isBlank()) {
-            ErrorResponder.writeFailure(
+            HttpEnvelope.writeFailure(
                     ex,
-                    json,
-                    traceId,
+                    reqHeaders,
+                    null,
                     new ResponseContext.Outcome.Failure(ErrorCode.BAD_QUERY, "missing sql", null, null));
             return;
         }
         if ("mock".equalsIgnoreCase(connectorMode)) {
-            ErrorResponder.writeFailure(
+            HttpEnvelope.writeFailure(
                     ex,
-                    json,
-                    traceId,
+                    reqHeaders,
+                    null,
                     new ResponseContext.Outcome.Failure(
                             ErrorCode.BAD_QUERY,
                             "connectorMode \"mock\" is not available in the browser demo (use demo or live)",
@@ -900,23 +900,28 @@ public final class DemoWebServer {
             return;
         }
 
+        // Identity resolution: header wins. X-User-Id header takes precedence over body
+        // mockUserId / demoUserId so callers can drive identity from headers consistently.
         UserContext requestUser;
-        boolean needGoogle = false;
-        if ("demo".equalsIgnoreCase(connectorMode)) {
+        boolean needGoogle = "live".equalsIgnoreCase(connectorMode);
+        String effectiveUserIdForScope = mockUserId;
+        if (reqHeaders.userIdHeader() != null) {
+            requestUser = new UserContext(reqHeaders.userIdHeader());
+            effectiveUserIdForScope = reqHeaders.userIdHeader();
+        } else if ("demo".equalsIgnoreCase(connectorMode)) {
             requestUser = mockUserId.isBlank() ? UserContext.anonymous() : new UserContext(mockUserId);
         } else if ("live".equalsIgnoreCase(connectorMode)) {
             requestUser = new UserContext(demoUserId);
-            needGoogle = true;
         } else {
             requestUser = UserContext.anonymous();
             // Unknown modes fall through to WebQueryService.execute → BAD_QUERY.
         }
 
         if (needGoogle && store != null && missingGoogleAccount(store, demoUserId)) {
-            ErrorResponder.writeFailure(
+            HttpEnvelope.writeFailure(
                     ex,
-                    json,
-                    traceId,
+                    reqHeaders,
+                    null,
                     new ResponseContext.Outcome.Failure(
                             ErrorCode.ENTITLEMENT_DENIED,
                             "Connect Google first (/oauth/google/start). Live mode needs OAuth for Drive.",
@@ -926,35 +931,44 @@ public final class DemoWebServer {
         }
 
         QueryCacheScope cacheScope =
-                "demo".equalsIgnoreCase(connectorMode)
-                        ? principals.cacheScopeFor(mockUserId)
+                "demo".equalsIgnoreCase(connectorMode) || reqHeaders.userIdHeader() != null
+                        ? principals.cacheScopeFor(effectiveUserIdForScope)
                         : QueryCacheScope.from(requestUser);
         Principal principal = principals.lookup(requestUser);
         String tenantId = principal.equals(Principal.anonymous()) ? null : cacheScope.tenantId();
         RequestContext ctx =
-                new RequestContext(traceId, requestUser, cacheScope, tenantId, Instant.now());
+                new RequestContext(
+                        reqHeaders.traceId(), requestUser, cacheScope, tenantId, Instant.now());
 
-        ResponseContext rc = webQueryService.execute(connectorMode, ctx, payload.toRequest());
+        // Cache-Control: max-age=N header overrides body maxStaleness for freshness control.
+        HttpQueryPayload effectivePayload =
+                reqHeaders.maxStaleness() != null
+                        ? new HttpQueryPayload(
+                                payload.sql(),
+                                payload.pageNumber(),
+                                payload.logicalCursorOffset(),
+                                payload.requestPageSize(),
+                                reqHeaders.maxStaleness())
+                        : payload;
+
+        ResponseContext rc = webQueryService.execute(connectorMode, ctx, effectivePayload.toRequest());
 
         if (rc.outcome() instanceof ResponseContext.Outcome.Success success) {
             JsonObject result = success.body();
-            WebQueryTraceLogger.appendTrace(traceId, connectorMode, payload.sql(), result);
-            ex.getResponseHeaders().add("X-Trace-Id", traceId);
-            if (json) {
-                sendJson(ex, 200, result);
+            WebQueryTraceLogger.appendTrace(reqHeaders.traceId(), connectorMode, payload.sql(), result);
+            if (reqHeaders.wantsJson()) {
+                HttpEnvelope.writeSuccessJson(ex, reqHeaders, ctx, result);
             } else {
-                sendBytes(
-                        ex,
-                        200,
-                        "text/html; charset=utf-8",
+                String html =
                         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Result</title></head><body>"
                                 + "<h2>Result</h2><pre>"
                                 + esc(GSON.toJson(result))
-                                + "</pre><p><a href=\"/\">Back</a></p></body></html>");
+                                + "</pre><p><a href=\"/\">Back</a></p></body></html>";
+                HttpEnvelope.writeSuccessHtml(ex, reqHeaders, ctx, result, html);
             }
         } else {
-            ErrorResponder.writeFailure(
-                    ex, json, traceId, (ResponseContext.Outcome.Failure) rc.outcome());
+            HttpEnvelope.writeFailure(
+                    ex, reqHeaders, ctx, (ResponseContext.Outcome.Failure) rc.outcome());
         }
     }
 

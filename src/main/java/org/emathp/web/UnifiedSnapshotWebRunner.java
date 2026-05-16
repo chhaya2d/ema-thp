@@ -178,7 +178,12 @@ final class UnifiedSnapshotWebRunner {
             sides.add(executeSideSnapshot(ctx, plannerQuery, c, queryRoot, maxStaleness, tagPolicy));
         }
         root.add("sides", sides);
-        root.addProperty("providerFetchSummary", summarizeSidesFetchMode(sides));
+        String fetchSummary = summarizeSidesFetchMode(sides);
+        root.addProperty("providerFetchSummary", fetchSummary);
+        // Top-level cache HIT/MISS signal for the response. HIT only when every side
+        // served from chunks (no provider call); MISS for "all_live" or "mixed".
+        // HttpEnvelope reads this to set X-Cache-Status.
+        root.addProperty("cacheHit", "all_cached".equals(fetchSummary));
         attachFreshnessMs(root, sides, now);
 
         enrichSingleSourceResumeCursors(root);
@@ -269,6 +274,9 @@ final class UnifiedSnapshotWebRunner {
         root.addProperty("snapshotEnvironment", snapshotEnv.name());
         root.addProperty("snapshotBacked", snap);
         root.addProperty(QueryResponseJsonKeys.FULL_MATERIALIZATION_REUSE, out.reusedFromDisk());
+        // Top-level cache HIT/MISS signal: HIT when the full materialization was reused;
+        // MISS when the join was (re-)computed (regardless of per-side cache outcomes).
+        root.addProperty("cacheHit", out.reusedFromDisk());
         root.addProperty("freshness_ms", out.freshnessMs());
         if (maxStaleness != null) {
             root.addProperty("maxStaleness", maxStaleness.toString());
