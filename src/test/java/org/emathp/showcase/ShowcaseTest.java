@@ -50,17 +50,44 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * <h2>Showcase — 10 narrated integration tests proving the system end-to-end.</h2>
+ * <h2>Showcase — narrated integration tests proving the system end-to-end.</h2>
  *
  * <p>Each test runs the full federated query path: parser → planner → engine → snapshot → service
  * response. Uses real {@code DefaultFederatedQueryService} composed with real engine, real planner,
  * real filesystem-backed snapshots ({@link FsSnapshotStore} in a {@code @TempDir}), real demo
  * connectors, and the real {@link DemoPrincipalRegistry}. Stops short of HTTP — assertions are
- * against {@link ResponseContext} directly (the same shape the HTTP layer would serialize).
+ * against {@link ResponseContext} directly.
+ *
+ * <h3>Where this maps to the HTTP wire</h3>
+ *
+ * <p>{@link ResponseContext} is the typed canonical representation of what the HTTP response
+ * carries — every header has a 1:1 source field. Asserting on {@code rc.cacheStatus()},
+ * {@code rc.freshnessMs()}, {@code rc.debug().snapshotPath()}, {@code rc.rateLimitStatus()},
+ * {@code rc.outcome().failure().retryAfterMs()}, etc. is <em>equivalent to</em> asserting on the
+ * corresponding response header. The wiring lives in:
+ *
+ * <ul>
+ *   <li><b>Inbound parse</b> — {@link org.emathp.web.HttpEnvelope#parse} reads
+ *       {@code Content-Type}, {@code X-User-Id}, {@code Cache-Control: max-age=N}, and
+ *       {@code Debug} into {@link org.emathp.web.HttpEnvelope.RequestHeaders}; the rest of the
+ *       system never touches HTTP headers.
+ *   <li><b>Outbound write</b> — {@link org.emathp.web.HttpEnvelope#applySuccessHeaders} reads
+ *       fields from {@link ResponseContext} and emits {@code X-Trace-Id}, {@code X-Cache-Status},
+ *       {@code X-Freshness-Ms}, {@code X-RateLimit-Status}, plus the four Debug-gated headers
+ *       ({@code X-Snapshot-Path}, {@code X-Query-Hash}, {@code X-Tenant-Id}, {@code X-Role})
+ *       from {@link org.emathp.query.DebugResponseContext}.
+ *   <li><b>Failure path</b> — {@link org.emathp.query.ErrorCode#httpStatus()} → HTTP status;
+ *       {@code failure.retryAfterMs()} → {@code Retry-After}; {@code failure.violatedScope()}
+ *       → {@code X-RateLimit-Scope}.
+ * </ul>
+ *
+ * <p>{@link org.emathp.web.HttpEnvelopeTest} verifies the {@code ResponseContext}-to-headers
+ * serialization separately. Together with the assertions in this class, the wire contract is
+ * covered without firing HTTP — see {@code docs/DESIGN.md#http-surface} for the full mapping.
  *
  * <p>Run: {@code gradlew test --tests "org.emathp.showcase.ShowcaseTest" -i}
  *
- * <p>OAuth + live Google Drive is covered by a design-doc screenshot, not a test (needs creds +
+ * <p>OAuth + live Google Drive is covered by a manual walkthrough, not a test (needs creds +
  * network; not CI-friendly).
  */
 @DisplayName("Federated query layer — end-to-end showcase")
@@ -462,7 +489,7 @@ class ShowcaseTest {
         // Service-layer limiter sits at FederatedQueryService.execute entry. Tight user bucket
         // so the 2nd request denies — regardless of cache hit/miss. This proves Ema's per-user
         // fairness is honored even when the request never reaches an upstream provider.
-        HierarchicalRateLimiterConfig tightService =
+          tightService =
                 HierarchicalRateLimiterConfig.forService(
                         new TokenBucketConfig(10.0, 20.0), // tenant — generous
                         new TokenBucketConfig(0.01, 1.0)); // user — burst=1, no refill

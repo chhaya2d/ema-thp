@@ -1,0 +1,50 @@
+  sql: SELECT title, updatedAt FROM notion WHERE updatedAt > '2020-01-01' ORDER BY updatedAt DESC LIMIT 20
+  queryHash=b9b6392e627ae1d6
+  snapshotPath=data\test\t_tenant-1_r_hr_ksv2\b9b6392e627ae1d6
+  freshnessDecision=fresh
+  snapshotBacked=true
+  --- side: notion
+    pushedSummary=[WHERE]
+    pending (not pushed)=[ORDER BY, PROJECTION, PAGINATION]
+    residual=ORDER BY updatedAt DESC
+    snapshotReuseNoProviderCall=true
+    providerFetchesThisRequest=0
+    continuationFetchesThisRequest=0
+    connectorSnapshotDir=data\test\t_tenant-1_r_hr_ksv2\b9b6392e627ae1d6\notion
+    rowsFromConnector=8
+    residualApplied=true
+----
+2026-05-16T05:06:09.743815300Z | traceId=65bf8df6-8c5f-4376-bc75-8a66d8176964 | connectorMode=demo | ok=true
+  sql: SELECT title, updatedAt FROM notion WHERE updatedAt > '2020-01-01' ORDER BY updatedAt DESC LIMIT 20
+  queryHash=b9b6392e627ae1d6
+  snapshotPath=data\test\t_tenant-1_r_hr_ksv2\b9b6392e627ae1d6
+  freshnessDecision=fresh
+  snapshotBacked=true
+  --- side: notion
+    pushedSummary=[WHERE]
+    pending (not pushed)=[ORDER BY, PROJECTION, PAGINATION]
+    residual=ORDER BY updatedAt DESC
+    snapshotReuseNoProviderCall=true
+    providerFetchesThisRequest=0
+    continuationFetchesThisRequest=0
+    connectorSnapshotDir=data\test\t_tenant-1_r_hr_ksv2\b9b6392e627ae1d6\notion
+    rowsFromConnector=8
+    residualApplied=true
+----
+2026-05-16T05:06:09.972034200Z | traceId=4c06218e-9e5c-41ec-b5fe-6efb88bb5250 | connectorMode=demo | ok=true
+  sql: SELECT title, updatedAt FROM notion WHERE updatedAt > '2020-01-01' ORDER BY updatedAt DESC LIMIT 20
+  queryHash=b9b6392e627ae1d6
+  snapshotPath=data\test\t_tenant-1_r_hr_ksv2\b9b6392e627ae1d6
+  freshnessDecision=fresh
+  snapshotBacked=true
+  --- side: notion
+    pushedSummary=[WHERE]
+    pending (not pushed)=[ORDER BY, PROJECTION, PAGINATION]
+    residual=ORDER BY updatedAt DESC
+    snapshotReuseNoProviderCall=true
+    providerFetchesThisRequest=0
+    continuationFetchesThisRequest=0
+    connectorSnapshotDir=data\test\t_tenant-1_r_hr_ksv2\b9b6392e627ae1d6\notion
+    rowsFromConnector=8
+    residualApplied=true
+----

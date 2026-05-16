@@ -15,6 +15,7 @@ For lower-level decisions, see `docs/adr/` (Architecture Decision Records). This
 - [Platform](#platform) — [Planner](#planner) · [Engine](#engine-hybrid-runner) · [Snapshot cache](#snapshot-cache)
 - [Concurrency](#concurrency)
 - [Operability](#operability)
+- [Testing](#testing)
 - [Deliberately out of scope](#deliberately-out-of-scope)
 - [Six-month plan](#six-month-plan)
 
@@ -120,9 +121,9 @@ The connector knows *how* its source authenticates (OAuth 2.0 for Drive, integra
 
 Example: at request time, the Drive connector calls `tokenStore.get(tenantId, userId, "google-drive")`, receives an OAuth access token, and attaches it as a `Bearer` header. If the source returns 401, the connector signals the store to refresh — the store decides *how* (refresh-token rotation, exponential backoff, etc.).
 
-### 6. Today: raw HTTP. Production: SDK.
+### 6. Raw HTTP today; SDK is the prod move
 
-For the demo we use raw HTTP against Google's REST API. Visible code, fewer dependencies. In production, the official SDK is the right call — it handles OAuth refresh, retries with backoff, typed responses, field-mask helpers, and API version migration. Swap is well-scoped (~half a day per connector).
+The Drive connector uses raw HTTP rather than Google's SDK — fewer dependencies, request/response shape visible in code. See [Out of scope §Connectors](#connectors-and-source-integration) for the SDK trade-off detail.
 
 ---
 
@@ -130,31 +131,13 @@ For the demo we use raw HTTP against Google's REST API. Visible code, fewer depe
 
 Authentication answers "who is the caller?" Ema needs to know the tenant, user, and role for every request so it can scope data, apply rate limits, and enforce access policy.
 
-### Today (THP demo)
-
 The demo uses **H2** (an embedded in-process database) and an in-memory `PrincipalRegistry` that maps username → `(tenantId, role)`. Principals are seeded at startup:
 
 - `alice` → tenant `t1`, role `hr`
 - `bob` → tenant `t1`, role `engineering`
 - `carol` → tenant `t2`, role `hr`
 
-Tokens (OAuth refresh tokens, connector API keys) live in an in-memory `TokenStore`.
-
-### Why this works for the demo but not for production
-
-H2 is single-process and embedded. One JVM, no replication, no sharing across instances. The moment you want HA or horizontal scale, this breaks.
-
-### Production shape
-
-Three concerns, three storage tiers — they don't belong in one box:
-
-| Concern | Demo | Production | Why production differs |
-|---|---|---|---|
-| **Who is the user?** | H2 + `PrincipalRegistry` | Enterprise IdP (Okta, Azure AD, Google Workspace) via SAML/OIDC | Customers already own their identity store — Ema integrates, doesn't replicate. |
-| **What credentials does the connector need?** | In-memory `TokenStore` | Vault / cloud KMS / Secrets Manager | Tokens need at-rest encryption, audit logs, rotation APIs. Co-locating with identity is a needless blast radius. |
-| **What policies apply?** | In-code config | Postgres-backed admin UI with versioning, or a policy engine (OPA / Cedar) | Policies are authored by non-engineers and change without code releases. |
-
-Migration from H2 to Postgres is JDBC-compatible — schema move, not a rewrite. The THP choice doesn't paint into a corner.
+Tokens (OAuth refresh tokens, connector API keys) live in an in-memory `TokenStore`. All three stores are **single-JVM only**.
 
 ---
 
@@ -162,7 +145,7 @@ Migration from H2 to Postgres is JDBC-compatible — schema move, not a rewrite.
 
 Authorization answers "is this caller allowed to see this row?" The connector tags rows; the engine decides whether to return them.
 
-### Today: tag-based RBAC
+Demo supports tag-based RBAC
 
 Two things define access:
 
@@ -177,28 +160,9 @@ Alice (tenant `t1`, role `hr`) queries `SELECT * FROM drive`. The Drive connecto
 
 Bob (same tenant `t1`, role `engineering`) runs the same query. Same 20 source rows. Engine drops the `hr`-only ones. Bob gets back a different 14.
 
-### Why tags and not native source ACLs (for this THP)
+### Why tags
 
-Tags are the simplest model that works across connector types. Some sources have native ACLs (Drive), some don't (a CSV file, a public API). Tags give a uniform mental model and let the demo work without integrating each source's permissions system.
-
-### Production trade-offs
-
-Tags work for small permission models. They fall over as permission groups grow:
-
-- **Manual tagging doesn't scale.** Real enterprises have thousands of groups; hand-mapping is unsustainable.
-- **Drift.** Source ACLs change without Ema knowing.
-- **Auditor unfriendly.** Hard to answer "why did alice see this row?" with a single source of truth.
-
-Two prod-shaped improvements, complementary not exclusive:
-
-1. **Source-ACL pass-through.** For sources that have native ACLs (Drive, SharePoint), call them with the user's own OAuth token. The source returns only what the user can see — Ema never has to second-guess. Cache key becomes finer-grained (USER scope), but correctness is delegated to the source.
-2. **Group-mapping sync from the IdP.** Reuse existing group memberships from Okta / Azure AD. Sync groups to tags automatically — "Okta group `hr-team` → tag `hr` on every doc the group owns." Removes manual tagging.
-
-For overlays that the source doesn't know about ("HR sees all policy docs even if Drive ACL is open"), layer a small policy engine (OPA / Cedar) on top. Policies become versioned and auditable.
-
-### Why H2 is fine for policy storage today
-
-The role → tag mapping is small, rarely changes, and is read-only at request time. H2 works. In production, this moves into the same backing store as identity (either Postgres or a policy engine), versioned, with an admin UI for non-engineer authoring.
+Tags are the simplest model that works across connector types. Some sources have native ACLs (Drive), some don't (CSV, public API). Tags give a uniform mental model that lets every connector participate in row-level RBAC without integrating its source's permissions system.
 
 ---
 
@@ -245,24 +209,6 @@ All knowledge of HTTP headers lives in one class — `org.emathp.web.HttpEnvelop
 
 Identity headers (`X-Tenant-Id`, `X-Role`) are gated behind `Debug` so default responses don't leak principal resolution to callers; debug-mode is opt-in and intended for developers / operators.
 
-### Where the `X-Cache-Status` signal comes from
-
-Both query shapes already track this; `UnifiedSnapshotWebRunner` surfaces a top-level `cacheHit` boolean on every successful response, derived as:
-
-| Query shape | Source | HIT means |
-|---|---|---|
-| Single-source | `summarizeSidesFetchMode(sides) == "all_cached"` | Every connector side served from chunks; no provider call |
-| Join | `FullMaterializationCoordinator.Outcome.reusedFromDisk()` | Full assembled join result was reused from disk |
-
-`HttpEnvelope.applyCacheStatusHeader` reads `body.cacheHit` and emits `X-Cache-Status: HIT|MISS`. The body itself keeps both `cacheHit` (top-level) and the more granular `serveMode` per side / `fullMaterializationReuse` for joins — header is the summary, body has the breakdown.
-
-### What's not parsed as a header today (and why)
-
-- **`Authorization: Bearer <jwt>`** — no JWT issuance in the demo; identity is `X-User-Id` (header) or `mockUserId` / `demoUserId` (body fallback). When an IdP is wired, the JWT validator runs at this same boundary and populates `UserContext`; the downstream code is unchanged.
-- **`X-Tenant-Id` inbound** — tenant is derived from principal lookup, not caller-supplied. Avoids the "caller claims tenant X" trust question for the demo.
-- **`If-None-Match` / `ETag`** — would be the right HTTP-native form for `cacheHit`-style conditional reads, but adds protocol complexity that doesn't earn its place at THP scope.
-
----
 
 ## Platform
 
@@ -290,53 +236,26 @@ Field selection doesn't cascade. The planner pushes `SELECT title, updatedAt` to
 
 #### LIMIT is never pushed
 
-`LIMIT` always runs in the engine — see [ADR-0003](adr/0003-connector-contract-excludes-limit.md). Reason: with residual filters present, the connector doesn't know how many rows will survive. Pushed `LIMIT 10` against a connector returns 10 rows pre-filter; the residual filter might drop 7, leaving the caller with 3 instead of 10. So LIMIT lives where it can see post-residual rows: in the engine.
+`LIMIT` always runs in the engine
+#### Rules today; cost-based is a gap
 
-#### Today: rules. Production: cost-based for cross-connector joins.
+The current planner is rule-driven and reads connector capability booleans — legible, easy to debug, sufficient for single-connector queries. Cross-connector joins (which side drives, hash vs sort-merge vs broadcast) need cardinality stats and a cost model — see [Out of scope §Query capabilities](#query-capabilities).
 
-The current planner is rule-driven and reads connector capability booleans. That's the right call when each query has one connector — rules are legible, easy to debug, and sufficient for the demo.
+### Engine
 
-The moment joins span connectors, "which side do I drive from" becomes a real question that rules can't answer well. Drive 100k Drive docs and look each up in Notion → bad. Drive 50 Notion entries and look each up in Drive → fine. The answer depends on estimated cardinality. Cost-based planning (cardinality stats + join selectivity estimation) is the prod move when cross-connector joins become common.
+The engine is the orchestrator. For each query it drives the connector's page loop, applies residual ops, applies the tag filter, returns rows.
 
-### Engine (Hybrid Runner)
+#### Per-side page loop
 
-The engine is the orchestrator. For each query it: drives the connector's page loop, applies residual ops (filter / sort / limit), applies the tag filter, returns rows.
+`SingleSourceSidePipeline` calls `connector.search(...)` in a loop until LIMIT is satisfied (post-residual) or the connector returns no next cursor. Each page is filtered + sorted + tag-filtered in memory before the next page is requested.
 
-The engine is also a **runner-selector**. Different queries need different execution shapes — the runner is picked per-query.
+#### Residual operations
 
-#### The runner interface
+Whatever the planner couldn't push runs here, in order: residual WHERE → residual ORDER BY → tag filter → LIMIT. LIMIT runs last because residual filters change the row count — it must see post-filter rows or it would truncate too early.
 
-One execution surface, multiple implementations:
+#### Joins
 
-| Runner | When | What it does |
-|---|---|---|
-| **InProcessRunner** | Small queries, single connector | Single thread per connector side. Today's default. |
-| **ParallelConnectorRunner** | Joins, multiple connectors, fits in memory | Fan out connector calls across threads; combine in-memory. |
-| **DistributedRunner** | Analytic-scale (TB joins, large aggregations) | Hand off to Spark / Flink / DuckDB-cluster. |
-
-The planner picks based on estimated cardinality + connector capabilities + query shape (join arity, aggregation presence). Selection becomes one method: `Planner.selectRunner(plan, stats)`.
-
-#### Intelligent partitioning
-
-Stateless executors are the seam that makes distributed runners possible. The runner emits **work units** (range scans, page batches, sub-joins) that any worker can pick up. Workers don't coordinate; the runtime decides where each work unit lands.
-
-This works when the connector supports range-bounded cursors (e.g. `cursor BETWEEN x AND y`). For connectors that only support sequential paging (offset or next-token), partitioning falls back to "one worker per connector side."
-
-#### Parallelisation in joins
-
-Today: connector sides in a join run sequentially. With ParallelConnectorRunner, left and right sides start at the same time; results combine when both finish. Latency drops to `max(leftSide, rightSide)` instead of `leftSide + rightSide`.
-
-This only helps when sides are independent (no nested-loop dependency). A cost-based planner picks broadcast-join vs nested-loop based on cardinality.
-
-#### Streaming vs materialize
-
-Today: materialize fully then return. Simpler. Worst case = full result set in memory.
-
-Streaming is the prod move for very large result sets, but it complicates joins (you'd need a streaming join operator) and complicates the cache (you can't write a chunk you haven't fully seen). InProcessRunner stays materialized; DistributedRunner is streaming by definition (Spark/Flink handle it).
-
-#### Graduation path
-
-The Hybrid Runner is the path from "Java process" to "real data platform." Same plan flows through, runner choice changes. A query that runs in 50ms on InProcessRunner today and 500ms on a 1B-row join tomorrow lands on DistributedRunner — same SQL, same planner, different runner. The engine isn't rewritten; it's *layered*.
+`FullMaterializationCoordinator` runs both sides of a join sequentially, materializes the result sets in memory, hash-matches them, and writes the combined output as a single chunk for reuse. One join strategy (full materialize + hash-match) — see [Out of scope §Query capabilities](#query-capabilities) for the multiple-strategy + cost-based-planner gap. The join TTL is `min(client.maxStaleness, left.maxFreshnessTtl, right.maxFreshnessTtl)`.
 
 ### Snapshot cache
 
@@ -356,34 +275,13 @@ Both `clientMaxStaleness` and `connector.maxFreshnessTtl()` are upper bounds on 
 
 #### Atomicity
 
-Today: in-process single-flight (see [Concurrency](#concurrency)) gives "one writer per `connectorDir` at a time" within a single JVM. Multi-process or crash-during-write is not handled.
+In-process single-flight (see [Concurrency](#concurrency)) gives "one writer per `connectorDir` at a time" within a single JVM. Concurrent missers for the same key collapse onto one `CompletableFuture` — the winner fetches and writes; the rest read the result via the future and never touch disk. 
 
-Production fix: **atomic rename**. Write to a sibling staging directory (`connectorDir.tmp-<uuid>`), then `Files.move(staging, connectorDir, ATOMIC_MOVE, REPLACE_EXISTING)`. Filesystem rename is atomic on the same volume — readers see either old or new, never partial. ~30 LOC change.
+*Code: `org.emathp.snapshot.adapters.fs.FsSnapshotStore`, `org.emathp.snapshot.pipeline.SingleSourceSidePipeline` (single-flight + freshness).*
 
-#### Production gaps beyond what the demo does
+#### Data format
 
-Today the cache is plain JSON chunks on disk. Production needs:
-
-- **Serialization upgrade.** JSON → columnar (Parquet/ORC). Order-of-magnitude faster scan, smaller on disk.
-- **Compression.** zstd or lz4 — typical 3–5× size reduction for row data.
-- **Encryption at rest.** Per-tenant keys via cloud KMS. Required for SOC2 and enterprise contracts.
-- **Eviction / size cap.** Today disk grows unbounded. Prod = per-tenant disk budget + LRU eviction + TTL-based sweep.
-- **Integrity / checksums.** Each chunk carries CRC32 or SHA. Corrupt chunk = lookup miss + alert (today: silent return of garbage).
-- **Schema versioning.** Chunks tagged with format version. Readers ignore versions they don't understand. Without this, every format change requires a global flush.
-- **Audit log.** Compliance regimes (SOC2, GDPR) want a record of "who read what cached row when."
-
-#### Distributed cache — two layers, not one
-
-| | Object store (S3 / GCS) | Distributed memory (Redis / Memcached) |
-|---|---|---|
-| Latency | Tens of ms | Sub-ms |
-| Durability | Strong (multi-AZ replication) | Weak (restart loses state) |
-| Cost | Cheap per GB | Expensive per GB |
-| Fits for Ema | Chunk bodies (large, slow-changing) | Metadata index (small, hot) |
-
-Production shape is **both, layered**. Object store is the source of truth for chunks. Redis is the metadata index — "for `(tenant, role, queryHash)`, which chunks exist and when do they expire?" Cache lookup is a sub-ms Redis check followed by an object-store fetch only on hit. Cache miss = both layers miss.
-
-This avoids the false choice between "fast and volatile" and "durable and slow" — each layer solves a different problem.
+Plain JSON on disk today, no compression, no encryption.
 
 ---
 
@@ -436,18 +334,160 @@ Either inequality is a useful alert.
 
 ## Operability
 
-*To be written.* Topics: 8 Prometheus metrics + `/metrics` endpoint, `traceId` end-to-end, uniform error envelope with `ErrorCode`, alerts worth wiring (`cache_misses > provider_calls`, `rate_limit_denied` per-tenant spikes, p99 latency per connector).
+The system is designed to be debuggable at 3 a.m. without source-code access. Every request has a stable trace identity, every failure has a typed code, every behavior of interest is a counted metric.
+
+### Metrics — `/metrics` endpoint, Prometheus text format
+
+Eight counters and histograms, exposed at `GET /metrics` (no auth, hand-rolled — no `simpleclient` dep). Each one answers a specific operational question:
+
+| Metric | Type | Answers |
+|---|---|---|
+| `emathp_provider_calls_total{connector,outcome}` | counter | "Is each connector behaving? What's the ok/error split?" |
+| `emathp_provider_call_duration_seconds{connector}` | histogram | "Is connector X getting slower?" — drives p50/p95/p99 alerts |
+| `emathp_snapshot_cache_hits_total{connector}` + `_misses_total` | counter | "Is the cache effective? What's the hit ratio per source?" |
+| `emathp_snapshot_stale_restarts_total` | counter | "How often is `maxStaleness` actually invalidating chunks?" |
+| `emathp_response_freshness_ms` | histogram | "What's the distribution of data age served to clients?" |
+| `emathp_planner_pushdown_total{connector,op}` + `_residual_total` | counter | "Is pushdown working? Which ops are escaping to the engine?" |
+| `emathp_query_errors_total{code}` | counter | "What's failing? `RATE_LIMIT_EXHAUSTED`, `BAD_QUERY`, `INTERNAL`?" |
+| `emathp_rate_limit_denied_total{scope}` | counter | "Which bucket is tripping? `USER`, `TENANT`, `CONNECTOR`?" |
+
+All counters/histograms are static singletons on `org.emathp.metrics.Metrics`; call sites are one-liners (`Metrics.PROVIDER_CALLS.inc(connector.source(), "ok")`). Cumulative values; per-minute rates come from a Prometheus scrape diffing consecutive samples (the standard pattern). Sample post-burst output: [`docs/sample-output/metrics-after-k6.txt`](sample-output/metrics-after-k6.txt).
+
+### Trace identity end-to-end
+
+Every request gets a server-generated UUID at the HTTP boundary (`HttpEnvelope.parse` → `RequestContext.traceId`). The same UUID appears in:
+
+- **`X-Trace-Id` response header** — set by `HttpEnvelope` on every response (success and failure)
+- **JSON response envelope `traceId` field** — for body-only consumers
+- **`logs/web-query-trace.log`** — one structured line per successful query (`traceId=...`, `sql=...`, `queryHash=...`, `snapshotPath=...`, per-side `pushedSummary` / `serveMode`)
+- **`ResponseContext.Outcome.Failure`** — failure envelope carries the same `traceId`
+
+Result: an on-call engineer sees a 5xx in their dashboard, copies the `X-Trace-Id`, greps the trace log and the structured logs, and lands on the exact request shape + cache state + connector outcome. Single ID, three surfaces. Sample: [`docs/sample-output/trace-log-sample.log`](sample-output/trace-log-sample.log).
+
+### Uniform error envelope
+
+All failures cross the service boundary as `ResponseContext.Outcome.Failure(code, message, retryAfterMs, violatedScope)`. The HTTP layer maps this to a stable JSON shape:
+
+```json
+{
+  "ok": false,
+  "code": "RATE_LIMIT_EXHAUSTED",
+  "message": "...",
+  "traceId": "abc-123",
+  "rate_limit_status": "EXHAUSTED",
+  "retryAfterMs": 30000,
+  "violatedScope": "USER"
+}
+```
+
+Plus status code from `ErrorCode.httpStatus()` (e.g. `429` for `RATE_LIMIT_EXHAUSTED`, `400` for `BAD_QUERY`) and `Retry-After` / `X-RateLimit-Scope` response headers when applicable. Clients branch on the typed `code`, not on free-form message strings.
+
+### Invariants worth alerting on
+
+These are the assertions a Grafana / PromQL alert should fire on:
+
+| Alert | Threshold | What it tells you |
+|---|---|---|
+| `cache_misses_total != provider_calls_total` per connector | any non-equal value over a 5-min window | single-flight is broken **or** provider is being called outside the pipeline. Either way, a bug. |
+| `rate_limit_denied_total{scope="USER"}` rate spike per tenant | > 10× baseline over 1 min | abusive tenant or runaway client, distinct from a normal burst |
+| `provider_call_duration_seconds` p99 per connector | > tenant SLA (e.g. 2s for Drive) | upstream degrading; cache TTL might need tightening |
+| `query_errors_total{code="INTERNAL"}` rate | any non-zero rate sustained | unhandled exception path; warrants a paging alert |
+
+The first invariant is the most useful — it's a property of the architecture, not a threshold. If it ever breaks, something fundamental is wrong (single-flight collapse failed, or someone added a code path that bypasses `SingleSourceSidePipeline`).
+
+### Debugging walkthrough — what an on-call sees
+
+1. Dashboard alert: `cache_misses` climbing while `provider_calls` stays flat for the `notion` connector.
+2. Open the metrics log: confirm `emathp_snapshot_cache_misses_total{connector="notion"}` is 3x `emathp_provider_calls_total{connector="notion"}` over 10 min.
+3. Grep `web-query-trace.log` for `connector=notion` in that window — find one structured line per request with `snapshotReuseNoProviderCall=false`.
+4. Pick any `traceId`, search server logs for that ID, find the stack from `SingleSourceSidePipeline.execute()`.
+5. The line bumping `Metrics.SNAPSHOT_CACHE_MISSES` should also call `executor.execute(...)` → if it isn't, the bug is right there.
+
+The whole flow is `X-Trace-Id` plus four files. No source needed beyond that.
+
+*Code: `org.emathp.metrics.Metrics`, `org.emathp.web.WebQueryTraceLogger`, `org.emathp.web.ErrorResponder`.*
+
+## Testing
+
+Four layers of coverage, each verifying a different surface. No single layer claims to prove the whole system — they compose.
+
+| Layer | Where | What it verifies | Run |
+|---|---|---|---|
+| **Unit** | `src/test/java/.../*Test.java` per package | Per-class behavior in isolation — planner rules, freshness policy, token-bucket math, etc. | `gradlew test` (all) |
+| **Integration (service-layer)** | [`ShowcaseTest`](../src/test/java/org/emathp/showcase/ShowcaseTest.java) | End-to-end through `service.execute()` — planner → engine → snapshot → tag filter → rate limit → `ResponseContext`. 12 narrated tests with display names; assertions on `ResponseContext` fields = wire-contract assertions. | `gradlew test --tests "org.emathp.showcase.ShowcaseTest" -i` |
+| **HTTP serialization** | [`HttpEnvelopeTest`](../src/test/java/org/emathp/web/HttpEnvelopeTest.java) | `ResponseContext` → response headers, request headers → `RequestHeaders`. 33 unit tests; covers every header in the [HTTP surface](#http-surface). | Bundled in `gradlew test` |
+| **Load & concurrency** | [`scripts/k6-burst.js`](../scripts/k6-burst.js) | 100 RPS for 2 min — rate-limit behavior, single-flight cache fill, the `cache_misses == provider_calls` invariant under burst. | `k6 run scripts/k6-burst.js` (server must be running) |
+
+### The coverage logic
+
+The interesting claim is that **ShowcaseTest + HttpEnvelopeTest jointly verify the HTTP wire contract**, even though neither one fires real HTTP. The reasoning:
+
+1. `ResponseContext` is the typed canonical representation of every response header (see [HTTP surface](#http-surface)).
+2. `ShowcaseTest` asserts on `ResponseContext` fields after service execution → proves the service produces correct values for `cacheStatus`, `freshnessMs`, `rateLimitStatus`, `debug.snapshotPath`, etc.
+3. `HttpEnvelopeTest` asserts that those same `ResponseContext` fields serialize to the correct HTTP header values.
+4. Composition: service produces correct `ResponseContext` AND envelope serializes it correctly ⇒ the wire response carries the correct headers.
+
+No integration test stands up a real HTTP server, fires real requests, and asserts on real headers — that gap is acknowledged but doesn't add coverage the composition above doesn't already provide. The cost (~150 LOC + ephemeral-port harness) outweighs the marginal signal for THP scope.
+
+### What's deliberately not tested
+
+- **Real browser interaction** — manual walkthrough (see [README §2 Real UI](../README.md#2-real-ui--the-demo-web-server)), not Playwright/Selenium automation.
+- **OAuth flow against live Google** — needs creds + network, not CI-friendly. The token-store contract is unit-tested (`GoogleTokenStoreTest`); the OAuth code path is exercised manually.
+- **Multi-process correctness** — single-JVM is the THP boundary; multi-process scenarios are noted in [Deliberately out of scope](#deliberately-out-of-scope).
+
+*Code: see test directory structure under `src/test/java/org/emathp/`.*
 
 ## Deliberately out of scope
 
-*To be written.* What's missing and why it's OK for the THP:
+What's missing and why it's OK at THP scope. Most of these are seams the architecture already supports — the code lives behind interfaces (`Connector`, `TokenStore`, `PrincipalRegistry`, `RateLimiter`, `SnapshotStore`) that swap rather than refactor.
 
-- Atomic-rename for multi-process disk safety (in-process single-flight covers this scope)
-- Write path / schema evolution
-- OTel distributed tracing (the seam is in place; exporter is config)
-- Real connector marketplace
-- Refresh-token rotation audit log
-- HA / horizontal scaling (single-JVM is the THP boundary)
+### Connectors and source integration
+
+**SDK over raw HTTP.** The Drive connector uses raw HTTP against the REST API; production = official SDK (Google, Notion, etc.) — handles OAuth refresh, retries with backoff, typed responses, field-mask helpers, API version migration. Swap is well-scoped (~half a day per connector) but adds dependency weight; raw HTTP keeps the demo's request/response shape visible in code.
+
+**Typed connector error taxonomy + internationalization.** Today connectors throw raw exceptions that bubble up as `ErrorCode.INTERNAL`; production = each connector declares typed errors with `retryable` and `scope` so the engine routes them correctly (auth-expired → refresh; throttled → backoff; upstream 5xx → retry). Error messages are English-only; production = `Accept-Language`-aware localization. Same surface, two separate gaps.
+
+### Identity, authn, credentials
+
+**Caller-to-Ema authentication.** Today there's no platform-level authn: `X-User-Id` request header is trusted, body `mockUserId` is trusted. Production = `Authorization: Bearer <jwt>` issued by the customer's IdP (Okta / Azure AD / Google Workspace), validated at `HttpEnvelope.parse`, populates `RequestContext`. Distinct from connector auth (Ema-to-source); the demo handles only the second.
+
+**Credential flow as deployment choice.** Server-stored tokens today (in-memory `TokenStore`). For high-compliance verticals (finance, healthcare, government) where vendor credential storage is contractually prohibited, the alternative is BYO-token mode — caller supplies short-lived access tokens per request; Ema persists nothing. The `TokenStore` interface supports both impls; only the server-stored one ships.
+
+### Authorization
+
+**Cell-level security with a data catalog.** Today: row-level RBAC via tags — engine drops whole rows the caller's role isn't allowed. Production for healthcare/finance/government = cell-level encryption with per-classification keys (PII / PHI / financial) fetched from KMS, gated by role lookup. Requires a **data catalog** ("Drive's `ssn` column is PII") to know which cells get which keys — that's a separate platform missing from the demo entirely.
+
+### Storage and cache
+
+**Distributed cache backend.** Local disk today; single-host only. Production = Redis as the metadata index ("which chunks exist for this `(tenant, role, queryHash)`, when do they expire?") + object store as the chunk body. Object store alone is wrong — S3 RTT (~50–200ms) can exceed Drive / Notion API latency, making the cache anti-value. Two layers, each solving a different problem.
+
+**Cache hygiene at rest.** Plain JSON on disk today, no compression, no encryption. Production = columnar (Parquet / ORC) for scan speed + zstd compression + per-tenant KMS encryption (SOC2 and enterprise contracts require it). Plus eviction (per-tenant disk budget + LRU), integrity checksums, schema versioning, and an audit log of cache reads — all standard cache hygiene the demo skips for simplicity.
+
+### Query capabilities
+
+**Cost-based planning + multiple join strategies.** Rules-based planner today; single full-materialization join strategy (both sides into memory, hash-match). Production = cardinality estimation + per-query selection of hash / sort-merge / broadcast / nested-loop based on cost. Hardcoded rules break the moment a join is 100k Drive docs × 50 Notion entries — the planner needs to pick the driving side from stats.
+
+**Write path / DDL / DML.** Read-only by design. Adding writes opens idempotency keys, optimistic locking, write-through cache invalidation, audit-log immutability — a whole second architecture parallel to the read path. Out of scope at THP scale; the right v1 cut.
+
+### Scale and decomposition
+
+**Multi-process / horizontal scaling.** Single JVM bounds everything today: H2 for OAuth tokens, in-memory `PrincipalRegistry`, in-memory `TokenBucket` rate limiter, in-memory `TagAccessPolicy`, local-disk snapshot cache, single-instance metrics registry. Production = cluster-aware replacements for each (Redis-backed rate limiter, Postgres-backed principals, KMS/Vault-backed tokens, the distributed cache above, scraped/aggregated metrics). The seams to swap exist; the wiring is single-instance.
+
+**Distributed processing (Spark / Flink) for analytic-scale.** Today's engine materializes everything in-process — fine for OLTP-shaped queries (50ms, hundreds of rows). Production at analytic scale (TB joins, large aggregations, complex windowing) = hand off the plan to a distributed runtime: emit `pushedQuery` + `residualOps` as work units, let Spark / Flink / DuckDB-cluster execute, stream results back. Same planner, same connector contracts, different runner. A hybrid runner-selector picks per-query based on estimated cardinality so small queries stay in-process and only the analytic ones pay the distributed-engine startup cost.
+
+### Observability
+
+**OTel distributed tracing.** Today: server-generated `X-Trace-Id`, propagated through logs + body + response headers. Production = W3C Trace Context (`traceparent` request header accepted from callers, propagated into outbound connector calls, exported to Jaeger / Tempo / Honeycomb / DataDog). The seam is in place; only the exporter and inbound parse are missing.
+
+**Operational hygiene gaps.** Three smaller items grouped together:
+
+- **Log rotation.** `logs/web-query-trace.log` grows unbounded; production = logback / log4j with size+time rolling + retention policy (90 days hot, 7 years cold for compliance verticals).
+- **Refresh-token rotation + audit log.** Google rotates refresh tokens on use; we read but don't rotate. Production = rotation handling, key versioning, audit log of credential accesses ("who fetched the Drive token at 03:47Z").
+- **Denser metrics.** 8 metrics today, mostly global or per-connector. Production = 30+ with cardinality budgets — per-tenant breakdowns of every counter, executor queue depth, per-planner-phase timings, per-connector latency histograms with quantiles.
+
+### Stepping back: not a monolith
+
+Most of the gaps above land on the same conclusion — Ema in production isn't one JVM, it's a small fleet of services (HTTP gateway, query engine, connector pool, cache service, rate limiter, token store, observability pipeline) decomposed along the seams the THP already establishes. Same code, more boxes, with shared infrastructure (Redis, object store, KMS, OTel collector) replacing the in-process structures. This document maps the seams; the productionization map is a separate doc.
 
 ## Six-month plan
 
