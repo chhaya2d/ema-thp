@@ -45,9 +45,9 @@ public final class DemoGoogleDriveConnector implements Connector {
         return DemoConnectorDefaults.PROVIDER_PAGE_SIZE;
     }
 
-    /** Drive metadata changes slowly; default freshness window is comfortable. */
+    /** Drive metadata changes slowly; freshness ceiling is comfortable. */
     @Override
-    public Duration defaultFreshnessTtl() {
+    public Duration maxFreshnessTtl() {
         return Duration.ofMinutes(10);
     }
 

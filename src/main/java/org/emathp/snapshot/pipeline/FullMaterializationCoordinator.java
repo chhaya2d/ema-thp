@@ -121,25 +121,23 @@ public final class FullMaterializationCoordinator {
     }
 
     /**
-     * Resolution order for join TTL: client {@code maxStaleness} wins; else the <strong>min</strong>
-     * of the two side connectors' {@link
-     * org.emathp.connector.Connector#defaultFreshnessTtl()} — the materialized result is only as
-     * fresh as its tightest side; else the system-wide floor.
+     * Resolves the effective TTL for a materialized join.
+     *
+     * <p>Client {@code maxStaleness} and each side's {@link
+     * org.emathp.connector.Connector#maxFreshnessTtl()} are all upper bounds. The join is only as
+     * fresh as its tightest constraint: the effective TTL is the {@code min} of whichever bounds
+     * are non-null. The system-wide floor applies only when none of the three bounds are present.
      */
     private static Duration resolveJoinTtl(
             Duration clientMaxStaleness, JoinQuery jq, Map<String, Connector> connectorsByName) {
-        if (clientMaxStaleness != null) {
-            return clientMaxStaleness;
-        }
         Connector leftConn = connectorsByName.get(jq.left().connectorName());
         Connector rightConn = connectorsByName.get(jq.right().connectorName());
-        Duration left = leftConn != null ? leftConn.defaultFreshnessTtl() : null;
-        Duration right = rightConn != null ? rightConn.defaultFreshnessTtl() : null;
-        if (left != null && right != null) {
-            return left.compareTo(right) <= 0 ? left : right;
-        }
-        if (left != null) return left;
-        if (right != null) return right;
-        return WebDefaults.snapshotChunkFreshness();
+        Duration left = leftConn != null ? leftConn.maxFreshnessTtl() : null;
+        Duration right = rightConn != null ? rightConn.maxFreshnessTtl() : null;
+        Duration min = null;
+        if (clientMaxStaleness != null) min = clientMaxStaleness;
+        if (left != null && (min == null || left.compareTo(min) < 0)) min = left;
+        if (right != null && (min == null || right.compareTo(min) < 0)) min = right;
+        return min != null ? min : WebDefaults.snapshotChunkFreshness();
     }
 }

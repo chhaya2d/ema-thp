@@ -32,8 +32,8 @@ public final class CountingConnector implements Connector {
     }
 
     @Override
-    public Duration defaultFreshnessTtl() {
-        return delegate.defaultFreshnessTtl();
+    public Duration maxFreshnessTtl() {
+        return delegate.maxFreshnessTtl();
     }
 
     @Override

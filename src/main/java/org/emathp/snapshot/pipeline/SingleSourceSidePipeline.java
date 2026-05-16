@@ -193,7 +193,7 @@ public final class SingleSourceSidePipeline {
                         plannerQuery.limit(),
                         tagPolicy);
 
-        Duration ttl = resolveTtl(maxStaleness, connector.defaultFreshnessTtl(), defaultWriteTtl);
+        Duration ttl = resolveTtl(maxStaleness, connector.maxFreshnessTtl(), defaultWriteTtl);
         Instant freshnessUntil = now.plus(ttl);
 
         List<EngineRow> rows = er.rows();
@@ -269,16 +269,25 @@ public final class SingleSourceSidePipeline {
     }
 
     /**
-     * Resolution order: client {@code maxStaleness} wins; else the connector's own
-     * {@link org.emathp.connector.Connector#defaultFreshnessTtl()}; else the system-wide floor.
+     * Resolves the effective chunk-write TTL.
+     *
+     * <p>Both the client's {@code maxStaleness} and the connector's
+     * {@link org.emathp.connector.Connector#maxFreshnessTtl()} are <em>upper bounds</em> on cache
+     * age — the connector advertises how long its source's representation stays valid (e.g. a
+     * search cursor's expiry), and the client expresses how stale they're willing to tolerate.
+     * The stamped TTL is the {@code min} of whichever are non-null; the floor applies only when
+     * both are absent.
      */
     static Duration resolveTtl(Duration clientMaxStaleness, Duration connectorTtl, Duration floor) {
-        if (clientMaxStaleness != null) {
-            return clientMaxStaleness;
+        if (clientMaxStaleness == null && connectorTtl == null) {
+            return floor;
         }
-        if (connectorTtl != null) {
+        if (clientMaxStaleness == null) {
             return connectorTtl;
         }
-        return floor;
+        if (connectorTtl == null) {
+            return clientMaxStaleness;
+        }
+        return clientMaxStaleness.compareTo(connectorTtl) <= 0 ? clientMaxStaleness : connectorTtl;
     }
 }

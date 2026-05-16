@@ -44,9 +44,9 @@ public final class DemoNotionConnector implements Connector {
         return DemoConnectorDefaults.PROVIDER_PAGE_SIZE;
     }
 
-    /** Notion is an editing surface — tighter freshness window than Drive metadata. */
+    /** Notion is an editing surface — tighter freshness ceiling than Drive metadata. */
     @Override
-    public Duration defaultFreshnessTtl() {
+    public Duration maxFreshnessTtl() {
         return Duration.ofMinutes(2);
     }
 

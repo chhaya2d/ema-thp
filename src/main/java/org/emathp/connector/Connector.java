@@ -22,15 +22,19 @@ public interface Connector {
     }
 
     /**
-     * How long this connector considers its own data fresh — the snapshot TTL used when the
-     * client does not pass {@code maxStaleness}. Different sources have different intrinsic
-     * change rates (a documents API ≠ a real-time messaging API), so each connector should
-     * advertise its own default rather than relying on a single global value.
+     * Hard upper bound on how long this connector's cached data is reusable. Different sources
+     * have different intrinsic invalidation semantics — a search-cursor's expiry, a webhook's
+     * delivery window, a documents API's typical change rate — so each connector advertises its
+     * own ceiling rather than relying on a single global value.
      *
-     * <p>Resolution order at the snapshot layer: client's {@code maxStaleness} → this method →
-     * {@link org.emathp.config.WebDefaults#snapshotChunkFreshness()} as the system-wide floor.
+     * <p>Both this and the client's {@code maxStaleness} are upper bounds at the snapshot layer.
+     * The effective TTL is their {@code min}: clients can request <em>tighter</em> freshness than
+     * the connector advertises (just becomes a cache miss), but cannot request <em>looser</em>
+     * (the source's validity contract is non-negotiable). When both are absent,
+     * {@link org.emathp.config.WebDefaults#snapshotChunkFreshness()} applies as the system-wide
+     * floor.
      */
-    default Duration defaultFreshnessTtl() {
+    default Duration maxFreshnessTtl() {
         return Duration.ofMinutes(5);
     }
 
