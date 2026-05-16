@@ -39,6 +39,12 @@ public final class WebQueryService {
                     0L,
                     null,
                     rls,
+                    null,
+                    new org.emathp.query.DebugResponseContext(
+                            null,
+                            null,
+                            ctx.tenantId(),
+                            ctx.scope() != null ? ctx.scope().roleSlug() : null),
                     new ResponseContext.Outcome.Failure(
                             e.code(), e.getMessage(), e.retryAfterMs(), e.violatedScope()));
         }

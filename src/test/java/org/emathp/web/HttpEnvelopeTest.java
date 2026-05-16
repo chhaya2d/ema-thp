@@ -16,11 +16,8 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.time.Duration;
-import java.time.Instant;
-import org.emathp.auth.UserContext;
-import org.emathp.cache.QueryCacheScope;
+import org.emathp.query.DebugResponseContext;
 import org.emathp.query.ErrorCode;
-import org.emathp.query.RequestContext;
 import org.emathp.query.ResponseContext;
 import org.junit.jupiter.api.Test;
 
@@ -30,7 +27,10 @@ import org.junit.jupiter.api.Test;
  * <ul>
  *   <li>{@code parse()} — request header reads (Content-Type, X-User-Id, Cache-Control, Debug)
  *   <li>{@code parseCacheControlMaxAge()} — the standalone Cache-Control parser
- *   <li>Header-applying helpers — what gets written into the response Headers map
+ *   <li>Header-applying helpers — what gets written into the response Headers map, all sourced
+ *       from {@link ResponseContext} (cache status, freshness, rate-limit status, debug fields)
+ *   <li>{@code applySuccessHeaders()} integration — all helpers together with a full
+ *       {@link ResponseContext} fixture
  * </ul>
  *
  * <p>Doesn't exercise the full {@code writeSuccess*}/{@code writeFailure} methods because they
@@ -165,34 +165,40 @@ class HttpEnvelopeTest {
     // ---------- applyCacheStatusHeader() ----------
 
     @Test
-    void applyCacheStatus_cacheHitTrue_emitsHIT() {
+    void applyCacheStatus_cacheStatusHit_emitsHIT() {
         Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("cacheHit", true);
+        ResponseContext rc = successRc("HIT", null, "OK", null);
 
-        HttpEnvelope.applyCacheStatusHeader(h, body);
+        HttpEnvelope.applyCacheStatusHeader(h, rc);
 
         assertEquals("HIT", h.getFirst("X-Cache-Status"));
     }
 
     @Test
-    void applyCacheStatus_cacheHitFalse_emitsMISS() {
+    void applyCacheStatus_cacheStatusMiss_emitsMISS() {
         Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("cacheHit", false);
+        ResponseContext rc = successRc("MISS", null, "OK", null);
 
-        HttpEnvelope.applyCacheStatusHeader(h, body);
+        HttpEnvelope.applyCacheStatusHeader(h, rc);
 
         assertEquals("MISS", h.getFirst("X-Cache-Status"));
     }
 
     @Test
-    void applyCacheStatus_fieldAbsent_emitsNothing() {
+    void applyCacheStatus_cacheStatusNull_emitsNothing() {
         Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("ok", true);  // unrelated field
+        ResponseContext rc = successRc(null, null, "OK", null);
 
-        HttpEnvelope.applyCacheStatusHeader(h, body);
+        HttpEnvelope.applyCacheStatusHeader(h, rc);
+
+        assertNull(h.getFirst("X-Cache-Status"));
+    }
+
+    @Test
+    void applyCacheStatus_rcNull_emitsNothing() {
+        Headers h = new Headers();
+
+        HttpEnvelope.applyCacheStatusHeader(h, null);
 
         assertNull(h.getFirst("X-Cache-Status"));
     }
@@ -202,10 +208,9 @@ class HttpEnvelopeTest {
     @Test
     void applyFreshness_fieldPresent_emitsHeader() {
         Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("freshness_ms", 3450);
+        ResponseContext rc = successRc("HIT", 3450L, "OK", null);
 
-        HttpEnvelope.applyFreshnessHeader(h, body);
+        HttpEnvelope.applyFreshnessHeader(h, rc);
 
         assertEquals("3450", h.getFirst("X-Freshness-Ms"));
     }
@@ -213,57 +218,42 @@ class HttpEnvelopeTest {
     @Test
     void applyFreshness_fieldNull_emitsNothing() {
         Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.add("freshness_ms", com.google.gson.JsonNull.INSTANCE);
+        ResponseContext rc = successRc("HIT", null, "OK", null);
 
-        HttpEnvelope.applyFreshnessHeader(h, body);
+        HttpEnvelope.applyFreshnessHeader(h, rc);
 
         assertNull(h.getFirst("X-Freshness-Ms"));
     }
 
     @Test
-    void applyFreshness_fieldAbsent_emitsNothing() {
+    void applyFreshness_rcNull_emitsNothing() {
         Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("ok", true);
 
-        HttpEnvelope.applyFreshnessHeader(h, body);
+        HttpEnvelope.applyFreshnessHeader(h, null);
 
         assertNull(h.getFirst("X-Freshness-Ms"));
     }
 
-    // ---------- applySuccessRateLimitStatusHeader() ----------
+    // ---------- applyRateLimitStatusHeader() ----------
 
     @Test
-    void applySuccessRateLimit_bodyOK_emitsOK() {
+    void applyRateLimitStatus_okValue_emitsOK() {
         Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("rate_limit_status", "OK");
-
-        HttpEnvelope.applySuccessRateLimitStatusHeader(h, body);
-
+        HttpEnvelope.applyRateLimitStatusHeader(h, "OK");
         assertEquals("OK", h.getFirst("X-RateLimit-Status"));
     }
 
     @Test
-    void applySuccessRateLimit_bodyExhausted_emitsExhausted() {
+    void applyRateLimitStatus_exhaustedValue_emitsExhausted() {
         Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("rate_limit_status", "EXHAUSTED");
-
-        HttpEnvelope.applySuccessRateLimitStatusHeader(h, body);
-
+        HttpEnvelope.applyRateLimitStatusHeader(h, "EXHAUSTED");
         assertEquals("EXHAUSTED", h.getFirst("X-RateLimit-Status"));
     }
 
     @Test
-    void applySuccessRateLimit_fieldAbsent_defaultsToOK() {
+    void applyRateLimitStatus_nullValue_defaultsToOK() {
         Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("ok", true);
-
-        HttpEnvelope.applySuccessRateLimitStatusHeader(h, body);
-
+        HttpEnvelope.applyRateLimitStatusHeader(h, null);
         assertEquals("OK", h.getFirst("X-RateLimit-Status"));
     }
 
@@ -307,72 +297,56 @@ class HttpEnvelopeTest {
         assertNull(h.getFirst("X-RateLimit-Scope"));
     }
 
-    // ---------- applyDebugBodyHeaders() ----------
+    // ---------- applyDebugHeaders() ----------
 
     @Test
-    void applyDebugBody_snapshotPath_emits() {
+    void applyDebug_allFieldsSet_emitsAll() {
         Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("snapshotPath", "/tmp/snap/abc");
+        DebugResponseContext debug =
+                new DebugResponseContext("/tmp/snap/abc", "deadbeef", "t1", "hr");
 
-        HttpEnvelope.applyDebugBodyHeaders(h, body);
+        HttpEnvelope.applyDebugHeaders(h, debug);
 
         assertEquals("/tmp/snap/abc", h.getFirst("X-Snapshot-Path"));
-    }
-
-    @Test
-    void applyDebugBody_queryHash_emits() {
-        Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("queryHash", "deadbeef");
-
-        HttpEnvelope.applyDebugBodyHeaders(h, body);
-
         assertEquals("deadbeef", h.getFirst("X-Query-Hash"));
-    }
-
-    @Test
-    void applyDebugBody_neitherField_emitsNothing() {
-        Headers h = new Headers();
-        JsonObject body = new JsonObject();
-        body.addProperty("ok", true);
-
-        HttpEnvelope.applyDebugBodyHeaders(h, body);
-
-        assertNull(h.getFirst("X-Snapshot-Path"));
-        assertNull(h.getFirst("X-Query-Hash"));
-    }
-
-    // ---------- applyDebugContextHeaders() ----------
-
-    @Test
-    void applyDebugContext_setsTenantAndRole() {
-        Headers h = new Headers();
-        RequestContext ctx = ctxWith("t1", "hr");
-
-        HttpEnvelope.applyDebugContextHeaders(h, ctx);
-
         assertEquals("t1", h.getFirst("X-Tenant-Id"));
         assertEquals("hr", h.getFirst("X-Role"));
     }
 
     @Test
-    void applyDebugContext_nullTenant_skipsTenantHeader() {
+    void applyDebug_partialFields_emitsOnlyPresent() {
         Headers h = new Headers();
-        RequestContext ctx = ctxWith(null, "hr");
+        DebugResponseContext debug =
+                new DebugResponseContext("/tmp/snap/abc", null, "t1", null);
 
-        HttpEnvelope.applyDebugContextHeaders(h, ctx);
+        HttpEnvelope.applyDebugHeaders(h, debug);
 
-        assertNull(h.getFirst("X-Tenant-Id"));
-        assertEquals("hr", h.getFirst("X-Role"));
+        assertEquals("/tmp/snap/abc", h.getFirst("X-Snapshot-Path"));
+        assertNull(h.getFirst("X-Query-Hash"));
+        assertEquals("t1", h.getFirst("X-Tenant-Id"));
+        assertNull(h.getFirst("X-Role"));
     }
 
     @Test
-    void applyDebugContext_nullCtx_noOp() {
+    void applyDebug_blankTenantOrRole_skipped() {
+        Headers h = new Headers();
+        DebugResponseContext debug =
+                new DebugResponseContext(null, null, "  ", "");
+
+        HttpEnvelope.applyDebugHeaders(h, debug);
+
+        assertNull(h.getFirst("X-Tenant-Id"));
+        assertNull(h.getFirst("X-Role"));
+    }
+
+    @Test
+    void applyDebug_nullDebug_noOp() {
         Headers h = new Headers();
 
-        HttpEnvelope.applyDebugContextHeaders(h, null);
+        HttpEnvelope.applyDebugHeaders(h, null);
 
+        assertNull(h.getFirst("X-Snapshot-Path"));
+        assertNull(h.getFirst("X-Query-Hash"));
         assertNull(h.getFirst("X-Tenant-Id"));
         assertNull(h.getFirst("X-Role"));
     }
@@ -380,40 +354,43 @@ class HttpEnvelopeTest {
     // ---------- applySuccessHeaders() (integration of the above) ----------
 
     @Test
-    void applySuccessHeaders_alwaysSetsTraceIdCacheStatusFreshnessAndRateLimitStatus() {
+    void applySuccessHeaders_debugFalse_setsCoreOnlyNoDebugHeaders() {
         Headers h = new Headers();
         HttpEnvelope.RequestHeaders reqHeaders =
                 new HttpEnvelope.RequestHeaders(true, null, null, false, "trace-123");
-        JsonObject body = new JsonObject();
-        body.addProperty("cacheHit", true);
-        body.addProperty("freshness_ms", 3450);
-        body.addProperty("rate_limit_status", "OK");
+        ResponseContext rc =
+                successRc(
+                        "HIT",
+                        3450L,
+                        "OK",
+                        new DebugResponseContext("/tmp/snap/abc", "deadbeef", "t1", "hr"));
 
-        HttpEnvelope.applySuccessHeaders(h, reqHeaders, ctxWith("t1", "hr"), body);
+        HttpEnvelope.applySuccessHeaders(h, reqHeaders, rc);
 
         assertEquals("trace-123", h.getFirst("X-Trace-Id"));
         assertEquals("HIT", h.getFirst("X-Cache-Status"));
         assertEquals("3450", h.getFirst("X-Freshness-Ms"));
         assertEquals("OK", h.getFirst("X-RateLimit-Status"));
-        // Debug=false, so these are not emitted
+        // Debug=false in request → no debug headers even though rc.debug() is non-null.
         assertNull(h.getFirst("X-Snapshot-Path"));
+        assertNull(h.getFirst("X-Query-Hash"));
         assertNull(h.getFirst("X-Tenant-Id"));
         assertNull(h.getFirst("X-Role"));
     }
 
     @Test
-    void applySuccessHeaders_debugTrue_addsAllDebugHeaders() {
+    void applySuccessHeaders_debugTrue_emitsDebugHeadersToo() {
         Headers h = new Headers();
         HttpEnvelope.RequestHeaders reqHeaders =
                 new HttpEnvelope.RequestHeaders(true, null, null, true, "trace-456");
-        JsonObject body = new JsonObject();
-        body.addProperty("cacheHit", false);
-        body.addProperty("freshness_ms", 12);
-        body.addProperty("rate_limit_status", "OK");
-        body.addProperty("snapshotPath", "/tmp/snap/abc");
-        body.addProperty("queryHash", "deadbeef");
+        ResponseContext rc =
+                successRc(
+                        "MISS",
+                        12L,
+                        "OK",
+                        new DebugResponseContext("/tmp/snap/abc", "deadbeef", "t1", "hr"));
 
-        HttpEnvelope.applySuccessHeaders(h, reqHeaders, ctxWith("t1", "hr"), body);
+        HttpEnvelope.applySuccessHeaders(h, reqHeaders, rc);
 
         assertEquals("trace-456", h.getFirst("X-Trace-Id"));
         assertEquals("MISS", h.getFirst("X-Cache-Status"));
@@ -427,15 +404,17 @@ class HttpEnvelopeTest {
 
     // ---------- helpers ----------
 
-    private static RequestContext ctxWith(String tenantId, String roleSlug) {
-        UserContext user = new UserContext("test-user");
-        QueryCacheScope scope =
-                new QueryCacheScope(
-                        "test-user",
-                        tenantId != null ? tenantId : "_anon",
-                        roleSlug,
-                        QueryCacheScope.CURRENT_KEY_SCHEMA);
-        return new RequestContext("trace-test", user, scope, tenantId, Instant.now());
+    /** Builds a success ResponseContext fixture with given header fields. */
+    private static ResponseContext successRc(
+            String cacheStatus, Long freshnessMs, String rateLimitStatus, DebugResponseContext debug) {
+        return new ResponseContext(
+                "trace-fixture",
+                10L,
+                freshnessMs,
+                rateLimitStatus,
+                cacheStatus,
+                debug,
+                new ResponseContext.Outcome.Success(new JsonObject()));
     }
 
     private static HttpExchange fakeExchange(Headers requestHeaders) {

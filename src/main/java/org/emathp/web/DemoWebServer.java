@@ -873,7 +873,7 @@ public final class DemoWebServer {
             HttpEnvelope.writeFailure(
                     ex,
                     reqHeaders,
-                    null,   // no RequestContext yet — parse failed before identity resolution
+                    // No ResponseContext yet — parse failed before service was called.
                     new ResponseContext.Outcome.Failure(
                             ErrorCode.BAD_QUERY, "invalid payload: " + e.getMessage(), null, null));
             return;
@@ -883,7 +883,6 @@ public final class DemoWebServer {
             HttpEnvelope.writeFailure(
                     ex,
                     reqHeaders,
-                    null,
                     new ResponseContext.Outcome.Failure(ErrorCode.BAD_QUERY, "missing sql", null, null));
             return;
         }
@@ -891,7 +890,6 @@ public final class DemoWebServer {
             HttpEnvelope.writeFailure(
                     ex,
                     reqHeaders,
-                    null,
                     new ResponseContext.Outcome.Failure(
                             ErrorCode.BAD_QUERY,
                             "connectorMode \"mock\" is not available in the browser demo (use demo or live)",
@@ -921,7 +919,6 @@ public final class DemoWebServer {
             HttpEnvelope.writeFailure(
                     ex,
                     reqHeaders,
-                    null,
                     new ResponseContext.Outcome.Failure(
                             ErrorCode.ENTITLEMENT_DENIED,
                             "Connect Google first (/oauth/google/start). Live mode needs OAuth for Drive.",
@@ -957,18 +954,17 @@ public final class DemoWebServer {
             JsonObject result = success.body();
             WebQueryTraceLogger.appendTrace(reqHeaders.traceId(), connectorMode, payload.sql(), result);
             if (reqHeaders.wantsJson()) {
-                HttpEnvelope.writeSuccessJson(ex, reqHeaders, ctx, result);
+                HttpEnvelope.writeSuccessJson(ex, reqHeaders, rc);
             } else {
                 String html =
                         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Result</title></head><body>"
                                 + "<h2>Result</h2><pre>"
                                 + esc(GSON.toJson(result))
                                 + "</pre><p><a href=\"/\">Back</a></p></body></html>";
-                HttpEnvelope.writeSuccessHtml(ex, reqHeaders, ctx, result, html);
+                HttpEnvelope.writeSuccessHtml(ex, reqHeaders, rc, html);
             }
         } else {
-            HttpEnvelope.writeFailure(
-                    ex, reqHeaders, ctx, (ResponseContext.Outcome.Failure) rc.outcome());
+            HttpEnvelope.writeFailure(ex, reqHeaders, rc);
         }
     }
 

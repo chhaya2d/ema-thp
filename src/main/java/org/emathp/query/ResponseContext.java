@@ -5,9 +5,9 @@ import java.util.Objects;
 
 /**
  * Service-level response envelope: outcome (success body or failure code), trace echo,
- * server-side elapsed time, and data freshness. The HTTP layer maps {@link
- * Outcome.Failure#code()} → status code and {@link Outcome.Failure#retryAfterMs()} → {@code
- * Retry-After} header.
+ * server-side elapsed time, and data freshness. The HTTP layer maps every field here to a
+ * response header — the typed contract for what the wire carries. To swap HTTP for another
+ * transport, only the serializer changes; this record stays canonical.
  *
  * <p>Exceptions never cross the service boundary — every failure path returns a {@link
  * Outcome.Failure}. Tests prefer the throwing convenience on {@link FederatedQueryService}.
@@ -15,16 +15,28 @@ import java.util.Objects;
  * @param freshnessMs      age in ms of the freshest used snapshot data (now − oldest chunk
  *                         createdAt). {@code null} on failures, on responses that touched no
  *                         chunks (zero-row), or when the body does not carry the field.
+ *                         Maps to {@code X-Freshness-Ms} when non-null.
  * @param rateLimitStatus  {@code "OK"} on success and non-rate-limit failures; {@code
  *                         "EXHAUSTED"} when the request was denied with {@link
- *                         ErrorCode#RATE_LIMIT_EXHAUSTED}. Mirrors PDF's {@code
- *                         rate_limit_status} response field.
+ *                         ErrorCode#RATE_LIMIT_EXHAUSTED}. Maps to {@code X-RateLimit-Status}.
+ * @param cacheStatus      {@code "HIT"} or {@code "MISS"} on success responses;
+ *                         {@code null} on failure responses. Single-source: HIT when all sides
+ *                         served from chunks; MISS otherwise. Join: HIT when the full
+ *                         materialization was reused. Maps to {@code X-Cache-Status}.
+ * @param debug            Server-populated observability fields. Always non-null on success
+ *                         responses; {@code null} on failures from before identity resolution.
+ *                         The HTTP layer emits these as {@code X-Snapshot-Path} /
+ *                         {@code X-Query-Hash} / {@code X-Tenant-Id} / {@code X-Role} only when
+ *                         the caller sent {@code Debug: true}. Always-on population so tests
+ *                         and CLI callers can assert on them unconditionally.
  */
 public record ResponseContext(
         String traceId,
         long serverElapsedMs,
         Long freshnessMs,
         String rateLimitStatus,
+        String cacheStatus,
+        DebugResponseContext debug,
         Outcome outcome) {
 
     public ResponseContext {

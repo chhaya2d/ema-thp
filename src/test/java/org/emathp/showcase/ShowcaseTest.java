@@ -193,23 +193,35 @@ class ShowcaseTest {
                 "SELECT title, updatedAt FROM notion WHERE updatedAt > '2020-01-01'"
                         + " ORDER BY updatedAt DESC LIMIT 20";
 
-        JsonObject first = service.executeOrThrow(ctx, sql(sql));
+        // Use execute() to get the full ResponseContext (wire-contract surface) — body-detail
+        // assertions still come from rc.body(); header-shaped assertions go through the typed fields.
+        org.emathp.query.ResponseContext firstRc = service.execute(ctx, sql(sql));
+        assertTrue(firstRc.isSuccess(), "first run must succeed");
+        JsonObject first = firstRc.body();
+        assertEquals("MISS", firstRc.cacheStatus(),
+                "first run is a top-level cache MISS (no prior snapshot)");
         assertFalse(serveModeCached(first, NOTION_DEMO_SOURCE),
                 "first run should be live (no prior snapshot)");
-        String path1 = first.get("snapshotPath").getAsString();
+        String path1 = firstRc.debug().snapshotPath();
+        assertEquals(path1, first.get("snapshotPath").getAsString(),
+                "ResponseContext.debug.snapshotPath mirrors the body field exactly");
 
         // Tiny wait so freshness_ms is observably > 0 on the second call.
         Thread.sleep(50);
 
-        JsonObject second = service.executeOrThrow(ctx, sql(sql));
-        String path2 = second.get("snapshotPath").getAsString();
+        org.emathp.query.ResponseContext secondRc = service.execute(ctx, sql(sql));
+        assertTrue(secondRc.isSuccess(), "second run must succeed");
+        JsonObject second = secondRc.body();
+        String path2 = secondRc.debug().snapshotPath();
 
+        assertEquals("HIT", secondRc.cacheStatus(),
+                "second run is a top-level cache HIT (chunks reused)");
         assertTrue(serveModeCached(second, NOTION_DEMO_SOURCE),
                 "second run must be cached for the Notion side");
         assertEquals(path1, path2, "both runs share the same snapshot directory");
-        assertTrue(second.has("freshness_ms") && !second.get("freshness_ms").isJsonNull(),
-                "freshness_ms must be present on second run");
-        assertTrue(second.get("freshness_ms").getAsLong() >= 50L,
+        assertNotNull(secondRc.freshnessMs(),
+                "ResponseContext.freshnessMs must be present on second run");
+        assertTrue(secondRc.freshnessMs() >= 50L,
                 "freshness_ms must reflect age since first materialization");
     }
 
@@ -229,23 +241,41 @@ class ShowcaseTest {
                 "SELECT title, updatedAt FROM notion WHERE updatedAt > '2020-01-01'"
                         + " ORDER BY updatedAt DESC LIMIT 20";
 
-        JsonObject aliceRun = service.executeOrThrow(ctxFor("alice"), sql(sql));
+        org.emathp.query.ResponseContext aliceRc = service.execute(ctxFor("alice"), sql(sql));
+        assertTrue(aliceRc.isSuccess());
         int callsAfterAlice = notion.searchCount();
         assertTrue(callsAfterAlice > 0, "alice's run must hit the provider at least once");
+        assertEquals("MISS", aliceRc.cacheStatus(), "alice (first run, cold cache) is a top-level MISS");
 
-        JsonObject bobRun = service.executeOrThrow(ctxFor("bob"), sql(sql));
+        org.emathp.query.ResponseContext bobRc = service.execute(ctxFor("bob"), sql(sql));
+        assertTrue(bobRc.isSuccess());
         int callsAfterBob = notion.searchCount();
         assertTrue(callsAfterBob > callsAfterAlice,
                 "bob's run must be a cache MISS (different role → different snapshot dir, no chunk reuse)");
+        assertEquals("MISS", bobRc.cacheStatus(), "bob is a top-level MISS (separate dir from alice)");
 
-        JsonObject carolRun = service.executeOrThrow(ctxFor("carol"), sql(sql));
+        org.emathp.query.ResponseContext carolRc = service.execute(ctxFor("carol"), sql(sql));
+        assertTrue(carolRc.isSuccess());
         int callsAfterCarol = notion.searchCount();
         assertTrue(callsAfterCarol > callsAfterBob,
                 "carol's run must be a cache MISS (different tenant → different snapshot dir)");
+        assertEquals("MISS", carolRc.cacheStatus(), "carol is a top-level MISS (separate tenant from alice/bob)");
 
-        String alicePath = aliceRun.get("snapshotPath").getAsString();
-        String bobPath = bobRun.get("snapshotPath").getAsString();
-        String carolPath = carolRun.get("snapshotPath").getAsString();
+        // Wire-contract assertions use ResponseContext.debug.snapshotPath (typed). The body
+        // mirror is kept for backward compat; both should match.
+        String alicePath = aliceRc.debug().snapshotPath();
+        String bobPath = bobRc.debug().snapshotPath();
+        String carolPath = carolRc.debug().snapshotPath();
+        assertEquals(alicePath, aliceRc.body().get("snapshotPath").getAsString());
+        assertEquals(bobPath, bobRc.body().get("snapshotPath").getAsString());
+        assertEquals(carolPath, carolRc.body().get("snapshotPath").getAsString());
+        // Tenant/role debug fields confirm principal resolution per request.
+        assertEquals("tenant-1", aliceRc.debug().tenantId());
+        assertEquals("hr", aliceRc.debug().roleSlug());
+        assertEquals("tenant-1", bobRc.debug().tenantId());
+        assertEquals("engineering", bobRc.debug().roleSlug());
+        assertEquals("tenant-2", carolRc.debug().tenantId());
+        assertEquals("hr", carolRc.debug().roleSlug());
 
         // All three paths are distinct.
         assertNotEquals(alicePath, bobPath, "alice vs bob: role differs → path differs");
@@ -281,13 +311,18 @@ class ShowcaseTest {
                 "SELECT title, updatedAt FROM notion WHERE updatedAt > '2020-01-01'"
                         + " ORDER BY updatedAt DESC LIMIT 20";
 
-        JsonObject aliceRun = service.executeOrThrow(ctxFor("alice"), sql(sql));
+        org.emathp.query.ResponseContext aliceRc = service.execute(ctxFor("alice"), sql(sql));
+        assertTrue(aliceRc.isSuccess());
+        JsonObject aliceRun = aliceRc.body();
         int callsAfterAlice = notion.searchCount();
         assertTrue(callsAfterAlice > 0, "alice (first run) must hit the provider");
+        assertEquals("MISS", aliceRc.cacheStatus(), "alice first run is a top-level MISS");
         assertFalse(serveModeCached(aliceRun, NOTION_DEMO_SOURCE),
                 "alice's first run is live, not cached");
 
-        JsonObject danRun = service.executeOrThrow(ctxFor("dan"), sql(sql));
+        org.emathp.query.ResponseContext danRc = service.execute(ctxFor("dan"), sql(sql));
+        assertTrue(danRc.isSuccess());
+        JsonObject danRun = danRc.body();
         int callsAfterDan = notion.searchCount();
 
         // Dan has the same (tenant-1, hr) as alice. With DemoNotionConnector declaring
@@ -295,10 +330,10 @@ class ShowcaseTest {
         // chunks.
         assertEquals(callsAfterAlice, callsAfterDan,
                 "dan's run must be a cache HIT (no extra provider calls)");
+        assertEquals("HIT", danRc.cacheStatus(), "dan's run is a top-level cache HIT");
         assertTrue(serveModeCached(danRun, NOTION_DEMO_SOURCE),
                 "dan's Notion side must report serveMode=cached");
-        assertEquals(aliceRun.get("snapshotPath").getAsString(),
-                danRun.get("snapshotPath").getAsString(),
+        assertEquals(aliceRc.debug().snapshotPath(), danRc.debug().snapshotPath(),
                 "alice and dan share the snapshot path (same tenant + role; TENANT_ROLE connector)");
         // Sanity: response flag reflects the keying decision.
         assertFalse(danRun.get("snapshotKeyedByUser").getAsBoolean(),
@@ -346,18 +381,27 @@ class ShowcaseTest {
         String sql =
                 "SELECT g.title, n.title FROM google g JOIN notion n ON g.title = n.title LIMIT 10";
 
-        JsonObject first = service.executeOrThrow(ctx, sql(sql));
+        org.emathp.query.ResponseContext firstRc = service.execute(ctx, sql(sql));
+        assertTrue(firstRc.isSuccess());
+        JsonObject first = firstRc.body();
         assertEquals("join", first.get("kind").getAsString());
+        assertEquals("MISS", firstRc.cacheStatus(),
+                "first run is a top-level MISS (must materialize the join)");
         assertFalse(first.get("fullMaterializationReuse").getAsBoolean(),
                 "first run must materialize fresh — fullMaterializationReuse=false");
 
-        JsonObject second = service.executeOrThrow(ctx, sql(sql));
+        org.emathp.query.ResponseContext secondRc = service.execute(ctx, sql(sql));
+        assertTrue(secondRc.isSuccess());
+        JsonObject second = secondRc.body();
+        assertEquals("HIT", secondRc.cacheStatus(),
+                "second run is a top-level HIT (full materialization reused)");
         assertTrue(second.get("fullMaterializationReuse").getAsBoolean(),
                 "second run must reuse the materialized chunk — fullMaterializationReuse=true");
-        assertEquals(first.get("snapshotPath").getAsString(),
-                second.get("snapshotPath").getAsString(),
+        assertEquals(firstRc.debug().snapshotPath(), secondRc.debug().snapshotPath(),
                 "both runs share the same join snapshot path");
-        assertTrue(second.get("freshness_ms").getAsLong() >= 0L,
+        assertNotNull(secondRc.freshnessMs(),
+                "ResponseContext.freshnessMs must be present after the join is materialized");
+        assertTrue(secondRc.freshnessMs() >= 0L,
                 "freshness_ms must reflect age of the materialized join");
     }
 

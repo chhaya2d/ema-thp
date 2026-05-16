@@ -16,6 +16,7 @@ import org.emathp.model.ParsedQuery;
 import org.emathp.parser.SQLParserService;
 import org.emathp.planner.Planner;
 import org.emathp.query.ApiException;
+import org.emathp.query.DebugResponseContext;
 import org.emathp.query.ErrorCode;
 import org.emathp.query.FederatedQueryRequest;
 import org.emathp.query.FederatedQueryService;
@@ -123,11 +124,15 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
             if (freshnessMs != null) {
                 Metrics.RESPONSE_FRESHNESS.observe(freshnessMs.doubleValue());
             }
+            String cacheStatus = extractCacheStatus(body);
+            DebugResponseContext debug = buildDebugContext(ctx, body);
             return new ResponseContext(
                     ctx.traceId(),
                     elapsedMs,
                     freshnessMs,
                     "OK",
+                    cacheStatus,
+                    debug,
                     new ResponseContext.Outcome.Success(body));
         } catch (RateLimitedException e) {
             long elapsedMs = (System.nanoTime() - t0) / 1_000_000L;
@@ -138,6 +143,8 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
                     elapsedMs,
                     null,
                     "EXHAUSTED",
+                    null,
+                    debugForFailure(ctx),
                     new ResponseContext.Outcome.Failure(
                             ErrorCode.RATE_LIMIT_EXHAUSTED, e.getMessage(), e.retryAfterMs(), scope));
         } catch (ApiException e) {
@@ -150,6 +157,8 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
                     elapsedMs,
                     null,
                     rls,
+                    null,
+                    debugForFailure(ctx),
                     new ResponseContext.Outcome.Failure(
                             e.code(), e.getMessage(), e.retryAfterMs(), e.violatedScope()));
         } catch (IllegalArgumentException e) {
@@ -160,6 +169,8 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
                     elapsedMs,
                     null,
                     "OK",
+                    null,
+                    debugForFailure(ctx),
                     new ResponseContext.Outcome.Failure(
                             ErrorCode.BAD_QUERY, e.getMessage(), null, null));
         } catch (IOException | RuntimeException e) {
@@ -171,8 +182,60 @@ public final class DefaultFederatedQueryService implements FederatedQueryService
                     elapsedMs,
                     null,
                     "OK",
+                    null,
+                    debugForFailure(ctx),
                     new ResponseContext.Outcome.Failure(ErrorCode.INTERNAL, message, null, null));
         }
+    }
+
+    /**
+     * Top-level cache status: derived from body {@code cacheHit} (boolean, set by
+     * {@code UnifiedSnapshotWebRunner}). HIT for cache reuse, MISS otherwise. Returns
+     * {@code null} when the field is absent (defensive).
+     */
+    private static String extractCacheStatus(JsonObject body) {
+        if (body == null || !body.has("cacheHit") || body.get("cacheHit").isJsonNull()) {
+            return null;
+        }
+        return body.get("cacheHit").getAsBoolean() ? "HIT" : "MISS";
+    }
+
+    /**
+     * Always-populated debug context on success (option A). Reads body-level fields produced by
+     * the runner. {@code tenantId} / {@code roleSlug} fall back to {@link RequestContext} when
+     * the body doesn't carry them (single-source path always sets them; failure-side body may
+     * not).
+     */
+    private static DebugResponseContext buildDebugContext(RequestContext ctx, JsonObject body) {
+        String snapshotPath = stringOrNull(body, "snapshotPath");
+        String queryHash = stringOrNull(body, "queryHash");
+        String tenantId =
+                body != null && body.has("tenantId") && !body.get("tenantId").isJsonNull()
+                        ? body.get("tenantId").getAsString()
+                        : ctx.tenantId();
+        String roleSlug =
+                body != null && body.has("roleSlug") && !body.get("roleSlug").isJsonNull()
+                        ? body.get("roleSlug").getAsString()
+                        : (ctx.scope() != null ? ctx.scope().roleSlug() : null);
+        return new DebugResponseContext(snapshotPath, queryHash, tenantId, roleSlug);
+    }
+
+    /**
+     * Debug context for failure paths: no body to read from, so we surface only what's available
+     * from {@link RequestContext} (tenant + role). {@code snapshotPath} / {@code queryHash} stay
+     * null because the request didn't reach the snapshot layer.
+     */
+    private static DebugResponseContext debugForFailure(RequestContext ctx) {
+        String tenantId = ctx.tenantId();
+        String roleSlug = ctx.scope() != null ? ctx.scope().roleSlug() : null;
+        return new DebugResponseContext(null, null, tenantId, roleSlug);
+    }
+
+    private static String stringOrNull(JsonObject body, String key) {
+        if (body == null || !body.has(key) || body.get(key).isJsonNull()) {
+            return null;
+        }
+        return body.get(key).getAsString();
     }
 
     /**
