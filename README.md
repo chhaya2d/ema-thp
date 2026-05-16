@@ -2,7 +2,7 @@
 
 Parse a SELECT, plan what each source connector can do natively, execute with caching, rate limits, RBAC, and observability. Single-source queries and cross-connector joins both work. Drive + Notion are wired today; the connector seam is the extension point.
 
-This README is the **how-to-run** doc. Architecture, trade-offs, and the production path live in **[docs/DESIGN.md](docs/DESIGN.md)**. Individual decisions are recorded as ADRs under **[docs/adr/](docs/adr/)**.
+This README is the **how-to-run** doc. Architecture, trade-offs, and the production path live in **[docs/DESIGN.md](docs/DESIGN.md)**.
 
 ---
 
@@ -140,7 +140,6 @@ Check: `git config --get core.hooksPath` should print `.githooks`.
 | Doc | Purpose |
 |---|---|
 | [docs/DESIGN.md](docs/DESIGN.md) | Architecture, trade-offs, prod-shape, deliberately out of scope, six-month plan |
-| [docs/adr/](docs/adr/) | Per-decision ADRs (capability model, LIMIT enforcement, etc.) |
 | [docs/sample-output/](docs/sample-output/) | k6 run output + metric snapshots referenced above |
 
 Header contract specifically — [docs/DESIGN.md#http-surface](docs/DESIGN.md#http-surface).

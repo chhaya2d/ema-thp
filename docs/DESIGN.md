@@ -491,8 +491,94 @@ Most of the gaps above land on the same conclusion — Ema in production isn't o
 
 ## Six-month plan
 
-*To be written.* Order, with each step anchored to a customer milestone:
+Each phase is **2 months** of calendar time. Each milestone names the minimum customer outcome that ships. Team grows as roles are needed; recruiting starts one phase ahead.
 
-- **M1–2:** Object-store snapshot backend + atomic rename → unblocks multi-process correctness, sets up HA.
-- **M3–4:** Cost-based planner with cross-connector joins → unblocks first complex enterprise customer.
-- **M5–6:** Connector SDK + marketplace pattern; OTel exporter; SLO dashboards; first paying-customer onboarding playbook.
+### M1 — Foundation (2 months)
+
+**Customer milestone:** First enterprise customer onboards via SSO; team uses Ema daily with Drive + Notion; CS has a real onboarding playbook.
+
+**Deliverables:**
+- SSO-only auth — JWT validation against customer's IdP (Okta as launch IdP)
+- JIT user provisioning + IdP groups → Ema roles
+- Postgres principals; per-request role lookup
+- Postgres KMS-encrypted column for OAuth refresh tokens
+- Production Drive + Notion OAuth flows
+- Per-tenant Prometheus metrics + Grafana dashboards
+- Single-node Redis rate limiter (AOF + monitoring)
+- Per-query row budget (JVM OOM protection)
+- Atomic-rename for snapshot writes (crash-safe)
+- Admin CLI + tenant-settings UI
+- **Postgres backup + restore automation** (daily snapshot, weekly restore drill on staging)
+- **Append-only immutable query counter** (per-tenant Postgres append-log, separate from Prometheus — billing-grade input)
+- **Customer-facing status / health page** (live up/down indicator + scheduled maintenance announcements)
+
+**Team:** 3 BE + 1 FE + 0.5 DevOps + 0.5 Security + 0.5 QA + 0.5 PM = **6 FTE.**
+
+**Ship capacity:** ~50 tenants, ~1K users, ~100-300 QPS, ~50K rows/query.
+
+**Key trade-offs:** SSO-only (loses no-IdP segment); role lookup per request (1-2 ms for always-fresh authz); single-node Redis SPOF accepted at M1 scale.
+
+### M2 — Scale + observability (2 months)
+
+**Customer milestone:** Ema runs as a real production cluster — multi-instance, **Postgres HA**, **cluster-coherent snapshot cache**. Central logs + traces + dashboards. Engine handles `ORDER BY` + joins at scale without OOM.
+
+**Deliverables:**
+- Multi-process deployment behind LB (graceful shutdown, health checks)
+- Redis HA (Sentinel)
+- **Postgres HA** (streaming replication + automated failover via Patroni or RDS Multi-AZ)
+- **Cluster-coherent snapshot cache** (Redis-backed metadata index pointing at object-store chunk bodies, OR shared NFS — pick based on customer infra; closes the per-instance duplication gap from M1)
+- OTel: accept inbound `traceparent`, propagate outbound, basic spans (HTTP + connector + snapshot)
+- Structured JSON logs (slf4j + JsonLayout + MDC trace correlation)
+- Observability stack: Loki + Tempo + Prometheus + Grafana with per-tenant dashboards
+- Engine: bounded-heap top-N sort + external merge sort + sort-merge join + light cost-based join-strategy selection
+- Connector cardinality hint (`estimateRowCount()`) on Drive + Notion
+- Connector registry phase-1 (named lookup, per-tenant enable/disable)
+- Generic OIDC support for popular IdPs (Azure AD, Google Workspace, Auth0, OneLogin via tenant-configured issuer)
+- Admin UI: rate-limit overrides, tag policy editor
+- Per-environment config (12-factor)
+
+**Deploy story for M2:** scheduled-downtime upgrades — all instances replaced during a maintenance window. Rolling deploys + auto-rollback land in M3. Schema changes are manual SQL during the same window.
+
+**Team:** 3 BE + 1 FE + 1 SRE + 0.5 Security + 1 QA + 0.5 PM = **7 FTE.**
+
+**Ship capacity:** ~200-500 tenants, ~5K-15K users, ~500-1500 QPS (scales with instance count).
+
+**Key trade-offs:** still a monolith (decompose later if needed); cost-based is hint-driven, not full cost model; deploys = scheduled downtime (rolling in M3); basic OTel spans only.
+
+### M3 — Developer productivity (2 months)
+
+**Customer milestone:** Customer-requested connectors land in sprint timelines. Deploys are zero-downtime auto-canary with rollback. Engineering team measurably faster — same headcount, more velocity for M4+ features.
+
+**Deliverables — three tracks:**
+
+**Track A — Connector platform:**
+- Connector SDK (auto-paging, OAuth refresh, error mapping, OTel auto-instrument, schema declaration, cardinality default)
+- Maven scaffold + plugin (`mvn ema-connector:scaffold`)
+- Contract test suite (gates new connectors via CI)
+- Dynamic connector registration (deploy as JAR; register via admin API; no Ema restart)
+- Per-tenant connector version pinning + canary
+- SDK migration for Drive + Notion
+- First customer-requested connector on the SDK
+
+**Track B — CI + deploy automation:**
+- **CI automation**: PR-triggered full test suite, automated build artifacts, container image push
+- **Rolling deploys + auto-canary with metric-based rollback** (new version → 1 instance → watch error rate + p99 → auto-revert on regression)
+- **Database migration automation** (Flyway — versioned migrations applied during deploy)
+- **Security check automation**: Dependabot + SAST (CodeQL) on every PR
+- **JMH benchmark suite + perf regression CI** (PR fails on > 15% regression vs baseline)
+
+**Track C — Test automation + dev environment:**
+- **Staging environment** with realistic multi-tenant data (curated test customers, realistic data volumes)
+- **End-to-end test automation** (Playwright daily run: signup → IdP config → Drive connect → query → verify response)
+- **TestContainers** for integration tests (real Postgres + Redis in CI)
+- **24-hour weekly soak test** in staging (memory leak / perf-drift detection)
+- Local dev environment via `docker-compose up` (Postgres + Redis + mock-Okta + fake-Drive + Tempo + Loki + Grafana — full stack in 30s)
+- Feature flag system (lightweight in-house; per-tenant boolean flags refreshable without deploy)
+- Pre-commit hook upgrades (lint + format + smoke tests)
+
+**Team:** 3 BE + 1 FE + 1 SRE + 1 connector specialist (joins) + 0.5 Security + 1 QA + 0.5 PM = **8 FTE.**
+
+**Key trade-offs:** no connector marketplace yet (M6+); CI canary uses simple metric thresholds, not statistical analysis; feature flags in-house (not LaunchDarkly) — accepted for cost + simplicity.
+
+**Strategic payoff into M4+:** feature flags enable per-tenant rollout of new join strategies and risky engine work; dynamic connector registration sets up marketplace foundation; auto-canary lets later phases ship risky changes without prod risk; SDK turns connector growth from "1 per quarter" into "1 per sprint."
+
